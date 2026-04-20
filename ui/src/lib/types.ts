@@ -185,6 +185,101 @@ export type CostsByAgentRow = {
   subscriptionOutputTokens: number;
 };
 
+// -------- Skills --------
+
+export type CompanySkillSourceType =
+  | "local_path"
+  | "github"
+  | "url"
+  | "catalog"
+  | "skills_sh";
+
+export type CompanySkillSourceBadge =
+  | "paperclip"
+  | "github"
+  | "local"
+  | "url"
+  | "catalog"
+  | "skills_sh";
+
+export type CompanySkillFileInventoryEntry = {
+  path: string;
+  kind: "skill" | "markdown" | "reference" | "script" | "asset" | "other";
+};
+
+export type CompanySkillListItem = {
+  id: string;
+  companyId: string;
+  key: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  sourceType: CompanySkillSourceType;
+  sourceLocator: string | null;
+  sourceRef: string | null;
+  fileInventory: CompanySkillFileInventoryEntry[];
+  attachedAgentCount: number;
+  editable: boolean;
+  editableReason: string | null;
+  sourceLabel: string | null;
+  sourceBadge: CompanySkillSourceBadge;
+  sourcePath: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CompanySkillDetail = CompanySkillListItem & {
+  markdown: string;
+  usedByAgents: Array<{
+    id: string;
+    name: string;
+    urlKey: string;
+    adapterType: string;
+    desired: boolean;
+    actualState: string | null;
+  }>;
+};
+
+export type CompanySkillFileDetail = {
+  skillId: string;
+  path: string;
+  kind: CompanySkillFileInventoryEntry["kind"];
+  content: string;
+  language: string | null;
+  markdown: boolean;
+  editable: boolean;
+};
+
+export type AdapterSkillEntry = {
+  key: string;
+  runtimeName: string | null;
+  desired: boolean;
+  managed: boolean;
+  required?: boolean;
+  requiredReason?: string | null;
+  state: "configured" | "available" | "external" | "missing" | string;
+  origin?:
+    | "company_managed"
+    | "paperclip_required"
+    | "user_installed"
+    | "external_unknown";
+  originLabel?: string | null;
+  locationLabel?: string | null;
+  readOnly?: boolean;
+  sourcePath?: string | null;
+  targetPath?: string | null;
+  detail?: string | null;
+};
+
+export type AdapterSkillSnapshot = {
+  adapterType: string;
+  supported: boolean;
+  mode: string;
+  desiredSkills: string[];
+  entries: AdapterSkillEntry[];
+  warnings: string[];
+};
+
 export type ActivityRow = {
   id: string;
   companyId: string;

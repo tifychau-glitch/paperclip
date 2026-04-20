@@ -3,7 +3,9 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
+  Check,
   Loader2,
+  Lock,
   Pause,
   Pencil,
   Play,
@@ -20,6 +22,7 @@ import {
   runSummary,
   runTokens,
   runWakeReason,
+  type AdapterSkillEntry,
   type Agent,
   type HeartbeatRun,
 } from "../lib/types";
@@ -58,6 +61,24 @@ export function AgentDetailPage() {
     },
   });
 
+  const approvals = useQuery({
+    queryKey: ["pendingApprovals", agent.data?.companyId],
+    queryFn: () => api.listPendingApprovals(agent.data!.companyId),
+    enabled:
+      !!agent.data?.companyId && agent.data?.status === "pending_approval",
+  });
+  const pendingApprovalId =
+    approvals.data?.find(
+      (a) => a.type === "hire_agent" && a.payload.agentId === id,
+    )?.id ?? null;
+  const approve = useMutation({
+    mutationFn: () => api.approveApproval(pendingApprovalId!),
+    onSuccess: () => {
+      invalidate();
+      qc.invalidateQueries({ queryKey: ["pendingApprovals"] });
+    },
+  });
+
   if (agent.isLoading) {
     return (
       <div className="flex items-center gap-2 text-muted-foreground">
@@ -80,6 +101,7 @@ export function AgentDetailPage() {
   const a = agent.data;
   const persona = a.metadata?.persona ?? "";
   const isPaused = a.status === "paused";
+  const isPendingApproval = a.status === "pending_approval";
 
   return (
     <div className="space-y-8">
@@ -110,7 +132,25 @@ export function AgentDetailPage() {
           >
             <Pencil className="size-3.5" /> Edit
           </button>
-          {isPaused ? (
+          {isPendingApproval ? (
+            <button
+              onClick={() => approve.mutate()}
+              disabled={approve.isPending || !pendingApprovalId}
+              title={
+                !pendingApprovalId
+                  ? "No pending approval record found for this agent."
+                  : undefined
+              }
+              className="inline-flex items-center gap-1.5 rounded-md border border-green-500/40 bg-green-500/10 px-3 py-1.5 text-sm text-green-400 hover:bg-green-500/20 disabled:opacity-50"
+            >
+              {approve.isPending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Check className="size-3.5" />
+              )}
+              Approve
+            </button>
+          ) : isPaused ? (
             <button
               onClick={() => resume.mutate()}
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-sm hover:bg-accent"
@@ -217,8 +257,162 @@ export function AgentDetailPage() {
         </dl>
       </section>
 
+      <AgentSkillsSection agentId={a.id} />
+
       <HeartbeatConfig agent={a} onSaved={invalidate} />
     </div>
+  );
+}
+
+function AgentSkillsSection({ agentId }: { agentId: string }) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+
+  const snapshot = useQuery({
+    queryKey: ["agentSkills", agentId],
+    queryFn: () => api.listAgentSkills(agentId),
+  });
+
+  const sync = useMutation({
+    mutationFn: (desiredSkills: string[]) => api.syncAgentSkills(agentId, desiredSkills),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agentSkills", agentId] });
+      qc.invalidateQueries({ queryKey: ["skills"] });
+      setError(null);
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
+  const snap = snapshot.data;
+  const toggle = (entry: AdapterSkillEntry) => {
+    if (!snap) return;
+    if (entry.required || entry.readOnly) return;
+    const current = new Set(snap.desiredSkills);
+    if (current.has(entry.key)) current.delete(entry.key);
+    else current.add(entry.key);
+    sync.mutate(Array.from(current));
+  };
+
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+          Skills
+        </h2>
+        <Link
+          to="/skills"
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          Manage library →
+        </Link>
+      </div>
+
+      <div className="rounded-md border border-border bg-card">
+        {snapshot.isLoading ? (
+          <div className="flex items-center gap-2 p-4 text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" /> Loading…
+          </div>
+        ) : !snap?.supported ? (
+          <div className="p-4 text-sm text-muted-foreground">
+            This adapter doesn't support skills.
+          </div>
+        ) : snap.entries.length === 0 ? (
+          <div className="p-4 text-sm text-muted-foreground">
+            No skills available yet. Create one in the{" "}
+            <Link to="/skills" className="underline">
+              Skills
+            </Link>{" "}
+            tab.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {snap.entries.map((entry) => (
+              <SkillRow
+                key={entry.key}
+                entry={entry}
+                onToggle={() => toggle(entry)}
+                busy={sync.isPending}
+              />
+            ))}
+          </ul>
+        )}
+        {error && (
+          <div className="border-t border-border px-4 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+        {snap && snap.warnings.length > 0 && (
+          <div className="border-t border-border px-4 py-2 text-xs text-amber-500">
+            {snap.warnings.join(" · ")}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SkillRow({
+  entry,
+  onToggle,
+  busy,
+}: {
+  entry: AdapterSkillEntry;
+  onToggle: () => void;
+  busy: boolean;
+}) {
+  const locked = Boolean(entry.required) || Boolean(entry.readOnly);
+  const label = entry.originLabel ?? entry.origin ?? "";
+  const tone =
+    entry.state === "configured"
+      ? "text-green-400"
+      : entry.state === "missing"
+      ? "text-red-400"
+      : "text-muted-foreground";
+
+  return (
+    <li className="flex items-center gap-3 px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate font-mono text-sm">
+            {entry.runtimeName ?? entry.key}
+          </span>
+          {entry.required && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              <Lock className="size-3" /> required
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs">
+          {label && (
+            <span className="text-muted-foreground">{label}</span>
+          )}
+          <span className={tone}>· {entry.state}</span>
+          {entry.detail && (
+            <span className="text-muted-foreground/70">· {entry.detail}</span>
+          )}
+        </div>
+      </div>
+      <button
+        onClick={onToggle}
+        disabled={locked || busy}
+        title={
+          locked
+            ? entry.readOnly
+              ? "User-installed skill — managed outside Paperclip"
+              : (entry.requiredReason ?? "Required skill")
+            : undefined
+        }
+        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none disabled:opacity-40 ${
+          entry.desired ? "bg-primary" : "bg-muted"
+        }`}
+      >
+        <span
+          className={`inline-block size-5 rounded-full bg-white shadow transition-transform ${
+            entry.desired ? "translate-x-5" : "translate-x-0"
+          }`}
+        />
+      </button>
+    </li>
   );
 }
 

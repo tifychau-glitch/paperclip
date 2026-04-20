@@ -5,8 +5,12 @@ import type {
   ActivityRow,
   AdapterInfo,
   AdapterModel,
+  AdapterSkillSnapshot,
   Agent,
   Company,
+  CompanySkillDetail,
+  CompanySkillFileDetail,
+  CompanySkillListItem,
   CostsByAgentRow,
   CostsSummary,
   HeartbeatRun,
@@ -106,4 +110,88 @@ export const api = {
   // Activity (audit log of system events)
   activity: (companyId: string) =>
     request<ActivityRow[]>(`/companies/${companyId}/activity`),
+
+  // Skills: company library
+  listCompanySkills: (companyId: string) =>
+    request<CompanySkillListItem[]>(`/companies/${companyId}/skills`),
+  getCompanySkill: (companyId: string, skillId: string) =>
+    request<CompanySkillDetail>(`/companies/${companyId}/skills/${skillId}`),
+  createCompanySkill: (
+    companyId: string,
+    body: { name: string; slug?: string; description?: string; markdown?: string },
+  ) =>
+    request<CompanySkillDetail>(`/companies/${companyId}/skills`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  importCompanySkills: (companyId: string, source: string) =>
+    request<{ imported: Array<{ id: string; slug: string }>; warnings: string[] }>(
+      `/companies/${companyId}/skills/import`,
+      { method: "POST", body: JSON.stringify({ source }) },
+    ),
+  scanCompanySkills: (companyId: string) =>
+    request<{
+      scannedProjects: number;
+      scannedWorkspaces: number;
+      discovered: number;
+      imported: Array<{ id: string; slug: string }>;
+      updated: Array<{ id: string; slug: string }>;
+      warnings: string[];
+    }>(`/companies/${companyId}/skills/scan-projects`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  deleteCompanySkill: (companyId: string, skillId: string) =>
+    request<{ id: string }>(`/companies/${companyId}/skills/${skillId}`, {
+      method: "DELETE",
+    }),
+  getCompanySkillFile: (
+    companyId: string,
+    skillId: string,
+    path = "SKILL.md",
+  ) =>
+    request<CompanySkillFileDetail>(
+      `/companies/${companyId}/skills/${skillId}/files?path=${encodeURIComponent(path)}`,
+    ),
+  updateCompanySkillFile: (
+    companyId: string,
+    skillId: string,
+    path: string,
+    content: string,
+  ) =>
+    request<CompanySkillFileDetail>(
+      `/companies/${companyId}/skills/${skillId}/files`,
+      { method: "PATCH", body: JSON.stringify({ path, content }) },
+    ),
+
+  // Approvals (for activating pending_approval agents)
+  listPendingApprovals: (companyId: string) =>
+    request<
+      Array<{
+        id: string;
+        type: string;
+        status: string;
+        payload: { agentId?: string; name?: string } & Record<string, unknown>;
+        createdAt: string;
+      }>
+    >(`/companies/${companyId}/approvals?status=pending`),
+  approveApproval: (approvalId: string, decisionNote?: string) =>
+    request<{ id: string; status: string }>(`/approvals/${approvalId}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ decisionNote: decisionNote ?? null }),
+    }),
+  rejectApproval: (approvalId: string, decisionNote?: string) =>
+    request<{ id: string; status: string }>(`/approvals/${approvalId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ decisionNote: decisionNote ?? null }),
+    }),
+
+  // Skills: per-agent assignment
+  listAgentSkills: (agentId: string) =>
+    request<AdapterSkillSnapshot>(`/agents/${agentId}/skills`),
+  syncAgentSkills: (agentId: string, desiredSkills: string[]) =>
+    request<AdapterSkillSnapshot>(`/agents/${agentId}/skills/sync`, {
+      method: "POST",
+      body: JSON.stringify({ desiredSkills }),
+    }),
 };

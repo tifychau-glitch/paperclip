@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pause, Play, Plus, Trash2 } from "lucide-react";
+import { Check, Loader2, Pause, Play, Plus, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useDefaultCompany } from "../lib/company";
 import { formatRelativeTime } from "../lib/format";
@@ -18,6 +18,20 @@ export function AgentsPage() {
     enabled: !!company.data?.id,
     refetchInterval: 5_000,
   });
+
+  const approvals = useQuery({
+    queryKey: ["pendingApprovals", company.data?.id],
+    queryFn: () => api.listPendingApprovals(company.data!.id),
+    enabled: !!company.data?.id,
+    refetchInterval: 10_000,
+  });
+
+  const pendingByAgentId = new Map<string, string>();
+  for (const a of approvals.data ?? []) {
+    if (a.type === "hire_agent" && typeof a.payload.agentId === "string") {
+      pendingByAgentId.set(a.payload.agentId, a.id);
+    }
+  }
 
   if (company.isLoading) {
     return (
@@ -55,9 +69,16 @@ export function AgentsPage() {
         <EmptyState onAdd={() => setAdding(true)} />
       ) : (
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {agents.data?.map((a) => (
-            <AgentCard key={a.id} agent={a} />
-          ))}
+          {agents.data
+            ?.slice()
+            .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+            .map((a) => (
+              <AgentCard
+                key={a.id}
+                agent={a}
+                pendingApprovalId={pendingByAgentId.get(a.id) ?? null}
+              />
+            ))}
         </div>
       )}
 
@@ -106,9 +127,18 @@ function statusColor(status: Agent["status"]) {
   }
 }
 
-function AgentCard({ agent }: { agent: Agent }) {
+function AgentCard({
+  agent,
+  pendingApprovalId,
+}: {
+  agent: Agent;
+  pendingApprovalId: string | null;
+}) {
   const qc = useQueryClient();
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["agents"] });
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["agents"] });
+    qc.invalidateQueries({ queryKey: ["pendingApprovals"] });
+  };
 
   const pause = useMutation({
     mutationFn: () => api.pauseAgent(agent.id),
@@ -120,6 +150,10 @@ function AgentCard({ agent }: { agent: Agent }) {
   });
   const remove = useMutation({
     mutationFn: () => api.deleteAgent(agent.id),
+    onSuccess: invalidate,
+  });
+  const approve = useMutation({
+    mutationFn: () => api.approveApproval(pendingApprovalId!),
     onSuccess: invalidate,
   });
 
@@ -140,7 +174,6 @@ function AgentCard({ agent }: { agent: Agent }) {
             )}
           </div>
           <span
-            title={isPendingApproval ? "Created via Paperclip UI — can't be activated from Clipboard" : undefined}
             className={`rounded-full px-2 py-0.5 text-xs ${statusColor(agent.status)}`}
           >
             {agent.status === "pending_approval" ? "pending" : agent.status}
@@ -169,7 +202,25 @@ function AgentCard({ agent }: { agent: Agent }) {
         </dl>
       </Link>
       <div className="flex gap-2 border-t border-border px-4 py-3">
-        {isPaused ? (
+        {isPendingApproval ? (
+          <button
+            onClick={() => approve.mutate()}
+            disabled={approve.isPending || !pendingApprovalId}
+            title={
+              !pendingApprovalId
+                ? "No pending approval record found for this agent."
+                : undefined
+            }
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-green-500/40 bg-green-500/10 px-2.5 py-1.5 text-xs text-green-400 hover:bg-green-500/20 disabled:opacity-50"
+          >
+            {approve.isPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Check className="size-3.5" />
+            )}
+            Approve
+          </button>
+        ) : isPaused ? (
           <button
             onClick={() => resume.mutate()}
             disabled={resume.isPending}
@@ -180,7 +231,7 @@ function AgentCard({ agent }: { agent: Agent }) {
         ) : (
           <button
             onClick={() => pause.mutate()}
-            disabled={pause.isPending || isPendingApproval}
+            disabled={pause.isPending}
             className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs hover:bg-accent disabled:opacity-50"
           >
             <Pause className="size-3.5" /> Pause

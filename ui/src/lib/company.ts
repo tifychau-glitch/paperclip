@@ -1,18 +1,87 @@
-// Auto-bootstrap: fetches the first company or silently creates "Main" on first run.
-// The user never sees or chooses a company — there's only one.
+// Active-company store. Persists the selected company ID in localStorage
+// and exposes hooks to read, switch, and list companies.
 
-import { useQuery } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
+import type { Company } from "./types";
 
+const STORAGE_KEY = "clipboard.activeCompanyId";
 const DEFAULT_COMPANY_NAME = "Main";
 
-export function useDefaultCompany() {
+const listeners = new Set<() => void>();
+
+function readStored(): string | null {
+  try {
+    return typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(id: string | null) {
+  try {
+    if (id === null) localStorage.removeItem(STORAGE_KEY);
+    else localStorage.setItem(STORAGE_KEY, id);
+  } catch {
+    /* ignore */
+  }
+}
+
+function subscribe(cb: () => void) {
+  listeners.add(cb);
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === STORAGE_KEY) cb();
+  };
+  window.addEventListener("storage", onStorage);
+  return () => {
+    listeners.delete(cb);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+function notify() {
+  for (const cb of listeners) cb();
+}
+
+export function setActiveCompanyId(id: string) {
+  writeStored(id);
+  notify();
+}
+
+export function useActiveCompanyId(): string | null {
+  return useSyncExternalStore(subscribe, readStored, () => null);
+}
+
+export function useCompanies() {
   return useQuery({
-    queryKey: ["defaultCompany"],
+    queryKey: ["companies"],
+    queryFn: () => api.listCompanies(),
+    staleTime: 30_000,
+  });
+}
+
+export function useDefaultCompany() {
+  const activeId = useActiveCompanyId();
+  const qc = useQueryClient();
+  return useQuery<Company>({
+    queryKey: ["activeCompany", activeId ?? "__bootstrap__"],
     queryFn: async () => {
       const companies = await api.listCompanies();
-      if (companies.length > 0) return companies[0];
-      return api.createCompany({ name: DEFAULT_COMPANY_NAME });
+      qc.setQueryData(["companies"], companies);
+      if (activeId) {
+        const found = companies.find((c) => c.id === activeId);
+        if (found) return found;
+        // Stored ID no longer exists — fall through to first / create.
+      }
+      if (companies.length > 0) {
+        if (!activeId) writeStored(companies[0].id);
+        return companies[0];
+      }
+      const created = await api.createCompany({ name: DEFAULT_COMPANY_NAME });
+      qc.invalidateQueries({ queryKey: ["companies"] });
+      writeStored(created.id);
+      return created;
     },
     staleTime: Infinity,
   });
