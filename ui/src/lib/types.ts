@@ -40,11 +40,18 @@ export type Agent = {
   status: AgentStatus;
   reportsTo: string | null;
   capabilities: string | null;
-  metadata: { persona?: string; delegationContext?: string | null } | null;
+  metadata:
+    | {
+        persona?: string;
+        delegationContext?: string | null;
+        memory_enabled?: boolean;
+        [key: string]: unknown;
+      }
+    | null;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
   runtimeConfig: Record<string, unknown> | null;
-  budgetMonthlyCents: number;
+  budgetMonthlyCents: number | null;
   spentMonthlyCents: number;
   pauseReason: string | null;
   pausedAt: string | null;
@@ -129,6 +136,33 @@ export function runBilling(run: HeartbeatRun):
 
 export function runModel(run: HeartbeatRun): string | null {
   return run.usageJson?.model ?? null;
+}
+
+// Returns true if this agent authenticates with its own API key (metered
+// billing). Returns false for subscription agents whose runs are covered by
+// the user's Claude/Gemini plan — those runs write costCents = 0 to the
+// ledger, so dollar budgets don't track their usage.
+export function isMeteredAgent(agent: Agent): boolean {
+  const env = (agent.adapterConfig?.env ?? {}) as Record<string, unknown>;
+  const keys = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"];
+  return keys.some((k) => typeof env[k] === "string" && (env[k] as string).length > 0);
+}
+
+// CEO detection — matches the template-created default (role === "ceo") and
+// any custom agent titled "Chief Executive Officer" or literally "CEO".
+// Shared by the Tasks tab ("Tell your CEO" routing) and Agents grid (badge).
+export function isCeoAgent(agent: Agent): boolean {
+  const role = agent.role?.toLowerCase() ?? "";
+  const title = agent.title?.toLowerCase().trim() ?? "";
+  return (
+    role === "ceo" ||
+    title === "ceo" ||
+    title.includes("chief executive")
+  );
+}
+
+export function findCeoAgent(agents: Agent[]): Agent | null {
+  return agents.find(isCeoAgent) ?? null;
 }
 
 export function runDurationMs(run: HeartbeatRun): number | null {

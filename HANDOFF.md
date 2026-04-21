@@ -2,9 +2,18 @@
 
 ## What This Is
 
-**Clipboard** is a custom mission-control UI for running multiple Claude Code agents, built on top of the open-source [Paperclip](https://github.com/paperclipai/paperclip) backend. Tiffany wanted a clean, simple dashboard to manage AI agents — Paperclip's backend is excellent (handles Claude CLI execution, session management, cost tracking, scheduling) but its original UI is too complex. So we replaced the UI entirely while keeping the backend untouched.
+**Clipboard** is a custom mission-control UI for running multiple Claude Code
+agents, built on top of the open-source [Paperclip](https://github.com/paperclipai/paperclip)
+backend. Tiffany wanted a clean, simple dashboard to manage AI agents —
+Paperclip's backend is excellent (handles Claude CLI execution, session
+management, cost tracking, scheduling) but its original UI is too complex. So
+we replaced the UI entirely while keeping the backend mostly untouched. The
+only backend edits are small, clearly-marked additive hooks for features the
+UI needed (memory writer hook, memory read/clear routes, PATCH for renaming
+skills).
 
-There is also a second project, **Paperclip Copy**, which is the original Paperclip UI running unmodified on port 3101 — kept for reference.
+There is also a second repo, **Paperclip Copy**, which is the original
+Paperclip UI running unmodified on port 3101 — kept for reference.
 
 ---
 
@@ -12,17 +21,22 @@ There is also a second project, **Paperclip Copy**, which is the original Paperc
 
 | Project | Path | Port | Instance ID |
 |---------|------|------|-------------|
-| Clipboard (our custom UI) | `~/Downloads/paperclip-claude/` | 3100 (backend + UI via Vite middleware) | `default` |
+| Clipboard (our custom UI + lightly-extended backend) | `~/Downloads/paperclip-claude/` | 3100 backend / 5173 or 5180 UI | `default` |
 | Paperclip Copy (original UI) | `~/Downloads/paperclip-copy/` | 3101 | `paperclip-copy` |
 | AIOS (Iris accountability system) | `~/Downloads/AIOS/` | — | n/a |
 
 ### How to start Clipboard
+
 ```bash
 cd ~/Downloads/paperclip-claude && pnpm dev
-# Open http://localhost:3100
+# Open http://localhost:5173 (or :5180 if Iris dashboard is grabbing 5173)
 ```
 
+If `:5173` is busy (Iris dashboard often binds it first), Claude Preview has a
+`clipboard-ui` entry in `.claude/launch.json` that serves the UI on `:5180`.
+
 ### How to start Paperclip Copy
+
 ```bash
 cd ~/Downloads/paperclip-copy && PORT=3101 PAPERCLIP_INSTANCE_ID=paperclip-copy pnpm dev
 ```
@@ -32,16 +46,19 @@ cd ~/Downloads/paperclip-copy && PORT=3101 PAPERCLIP_INSTANCE_ID=paperclip-copy 
 ## Architecture
 
 ```
-Browser (localhost:5173)
+Browser (localhost:5173 or :5180)
   └─ React + Vite + Tailwind (our custom UI)
        └─ fetch /api/* → proxied to localhost:3100
-            └─ Paperclip Node server (unmodified)
+            └─ Paperclip Node server (lightly extended)
                  ├─ Embedded PostgreSQL (~/.paperclip/instances/default/)
                  ├─ Heartbeat scheduler
-                 └─ claude_local adapter → claude CLI → Claude subscription or API key
+                 ├─ claude_local adapter → claude CLI → Claude subscription or API key
+                 └─ Clipboard-only additions (see "Backend extensions" below)
 ```
 
-The UI calls Paperclip's existing REST API — we just show less and lay it out differently. The server, DB, and adapter layer are never touched.
+The UI calls Paperclip's existing REST API — we just show less and lay it out
+differently. The DB schema and adapter layer are untouched. The only backend
+code we've added lives inside clearly commented blocks.
 
 ---
 
@@ -50,89 +67,120 @@ The UI calls Paperclip's existing REST API — we just show less and lay it out 
 ```
 ui/src/
   main.tsx                    React entry point (QueryClient, BrowserRouter)
-  App.tsx                     Layout, 6-tab nav + CompanySwitcher, routes
+  App.tsx                     Layout, 7-tab nav + CompanySwitcher, routes
   lib/
     api.ts                    All fetch wrappers for Paperclip REST API
-    types.ts                  TypeScript types + helper functions (runTokens, runBilling, etc.)
+    types.ts                  TypeScript types + helpers:
+                              - runTokens/runBilling/runModel/runSummary/runWakeReason
+                              - isMeteredAgent(agent)  — API-key vs subscription
+                              - isCeoAgent(agent) / findCeoAgent(agents)
     format.ts                 formatTokens, formatUsd, formatDuration, formatRelativeTime
     company.ts                useDefaultCompany(), useCompanies(), useActiveCompanyId(),
                               setActiveCompanyId() — persists selected company to localStorage
-    templates.ts              10 built-in agent role templates (CEO, CTO, CMO, etc.)
-    delegation.ts             syncDelegationContext() — auto-injects delegation instructions into manager agents
+    templates.ts              10 built-in agent role templates (CEO template is the
+                              long 4-step delegation playbook; others are concise)
+    delegation.ts             syncDelegationContext() — auto-injects delegation context
+                              into every manager's system prompt.
+                              Uses VITE_CLIPBOARD_ROOT env var (or hardcoded default)
+                              to resolve the delegate.py path portably.
   pages/
-    Agents.tsx                Agent grid, Add Agent button, pause/delete/approve actions
-                              — sorted by createdAt (stable, no position jumps on pause/resume)
-    AgentDetail.tsx           Per-agent detail: send task, run history, edit, heartbeat schedule toggle,
-                              Skills section with per-agent toggles, Approve button for pending agents
-    OrgChart.tsx              Interactive org chart with drag-to-reparent and click-to-assign
-    Tasks.tsx                 Global task send (all agents) + merged recent runs feed
+    Dashboard.tsx             Unified high-level overview of the business
+    Agents.tsx                Agent grid, Add Agent button, pause/delete/approve,
+                              budget indicator, CEO badge, skeleton loading
+    AgentDetail.tsx           Per-agent detail — see "AgentDetail Page" below
+    OrgChart.tsx              Interactive org chart with drag-to-reparent + delegate chips
+    Tasks.tsx                 Tell-your-CEO composer (Mode A default) + direct send (Mode B),
+                              merged recent-runs feed from ALL agents
     Activity.tsx              Audit log feed with friendly labels and action filter
-    Spending.tsx              Token/cost breakdown per agent
-    Skills.tsx                Skills library: list/create/import/scan/edit/delete company skills
+    Spending.tsx              Token/cost breakdown per agent, subscription-aware budget column,
+                              "Agents at limit" summary
+    Skills.tsx                Skills library: list/create/import/scan/edit/delete
   components/
     AddAgentDialog.tsx        Create agent modal: 10 templates, adapter selector, auth toggle
-    CompanySwitcher.tsx       Header dropdown: switch between businesses, create new business
-  reference-paperclip/        Original Paperclip UI archived here — DO NOT DELETE
+    CompanySwitcher.tsx       Header dropdown: switch businesses, create new business
+    StatusBadge.tsx           Unified status pill (agent + run statuses) with pulse for "Working"
+    EmptyState.tsx            Reusable empty state block (icon + heading + subtext + CTA)
+    Skeleton.tsx              Shimmer primitive + AgentCardSkeleton + RunRowSkeleton
 scripts/
-  delegate.py                 Agent-to-agent delegation script (used by agents themselves)
+  delegate.py                 Agent-to-agent delegation (CEO uses this)
+  memory-writer.py            Post-run memory summariser (called by heartbeat hook)
   delegation_audit.log        Auto-created when delegations are made
+skills/
+  clipboard-core/             Core Paperclip-API skill, renamed from "paperclip"
+  clipboard-create-agent/     Agent creation skill, renamed from "paperclip-create-agent"
+  clipboard-memory/           Session-memory read/use instructions (injected when
+                              memory is enabled on an agent)
+  para-memory-files/          PARA-style memory files skill (untouched)
 ```
 
 ---
 
-## The 6 Tabs
+## The 7 Tabs
+
+### Dashboard
+High-level business overview — agent roster + status, month spend, pending
+approvals, 14-day run activity, success rate, spending by agent, recent
+activity + failures. Entry page for operators.
 
 ### Agents
-- Grid of all agents with status badge, model, last-active, working directory
-- Sorted by creation date (stable — pausing/resuming no longer jumps cards around)
+- Grid of all agents with status badge, CEO badge (if applicable), model, last-active, working directory
+- Sorted by creation date — pausing/resuming no longer jumps cards
 - Clicking a card opens AgentDetail
 - Add Agent button opens dialog with 10 role templates + custom option
 - Each card has context-sensitive footer action:
-  - **Pending approval** → green "Approve" button (one click activates the agent)
+  - **Pending approval** → green Approve button
   - **Paused** → Resume
-  - **Active/idle** → Pause
-  - Plus Delete (always)
+  - **Active / Idle / Working / Error** → Pause
+  - Delete is always present
+- **Budget indicator** at the bottom of the card — thin green/amber/red bar + optional warning label. Hidden for subscription agents (they don't accumulate `costCents`).
+- **Skeleton placeholders** shown while the agents list loads (3 cards)
+- Empty state: UserPlus icon + "No agents yet" + "Add agent" CTA
 
 ### Org
 - Visual org chart tree (CEO at top, branches down)
-- **Drag any agent card onto another** to reassign who they report to (cycle prevention enforced)
-- **Drop on background** to remove a manager (make root)
-- **Click any card** → "Assign task" modal for that agent
-- **Small arrow chips** inside manager cards → "Delegate task" modal (prepends delegation context to the prompt)
-- On every load and on every drag-drop, `syncDelegationContext()` runs automatically, injecting each manager's direct reports and `delegate.py` instructions into their system prompt
+- Drag any agent card onto another to change who they report to (cycle prevention enforced)
+- Drop on background to remove a manager (become root)
+- Click any card → "Assign task" modal for that agent
+- Small arrow chips inside manager cards → "Delegate task" modal
+- On every load and every drag-drop, `syncDelegationContext()` runs automatically, injecting each manager's direct reports + `delegate.py` path + instructions into their system prompt
+- Loading state: centered spinner + "Loading org chart…"
+- Compact `StatusBadge` dot on each card (same palette as the full pills)
 
 ### Tasks
-- Global: pick any agent from dropdown + prompt + Send
-- Below: merged recent-runs feed from ALL agents, sorted by date
-- Each run row: status badge, agent name, summary, duration, tokens, cost label (shows "Subscription" or "$X.XX")
+- **Mode A — "Tell your CEO"** (default): prominent composer, routes directly to the CEO agent via `POST /agents/:id/wakeup`. Has an "Ask for a plan before starting" checkbox that prepends a pre-approval prompt. Shows an amber warning if no CEO agent exists in the active company.
+- **Mode B — "Send directly to an agent"**: original composer (agent dropdown + prompt + Send). Reached via a muted link under Mode A. Always returns to Mode A on page load.
+- Recent tasks feed: merged runs from ALL agents, sorted by date, unified StatusBadge on each row
+- Skeleton placeholders (3 rows) while the feed loads
+- Empty state: ListChecks icon + "No tasks yet" (no CTA — the composer is already above)
 
 ### Skills
 - Grid of every skill in the active company's library
 - **New skill** — inline SKILL.md editor with a template
-- **Import** — paste a GitHub URL, skills.sh link, or local path (e.g. `/Users/tiffanychau/Downloads/AIOS/.claude/skills/research`)
+- **Import** — paste a GitHub URL, skills.sh link, or local path
 - **Scan my projects** — auto-discovers SKILL.md files in connected project workspaces
 - Click any skill card → view/edit SKILL.md, see which agents use it, delete
-- To load AIOS skills: Skills → Import → paste local path to any AIOS skill folder
+- Empty state: BookOpen icon + "New skill" CTA
+- Current roster: `clipboard-core`, `clipboard-create-agent`, `clipboard-memory`, `para-memory-files` (the three former `paperclip-*` slugs were renamed or deleted — see "Skills library cleanup" below)
 
 ### Activity
 - Audit log from Paperclip's `/companies/:id/activity` endpoint
-- Friendly action labels (e.g. "heartbeat.completed" → "Task completed")
+- Friendly action labels (e.g. `heartbeat.completed` → "Task completed")
 - Filter dropdown by action type
+- Filter-matches-nothing state keeps a small dashed box; the true empty state (no events at all) uses Activity pulse icon + "Nothing yet"
 
 ### Spending
-- 4 summary cards: total tokens, total runs, API spend, active agents
-- Per-agent table: input / cached / output tokens, subscription runs vs API runs, real $ if any
+- Summary cards: total tokens, total runs, API spend, **Agents at limit** (red/highlighted if any metered agent is auto-paused by budget)
+- Per-agent table: input/cached/output tokens, subscription vs API run counts, real $, **Budget column** that shows `$X / $Y` for metered agents or "Subscription" for subscription agents
 
 ---
 
 ## Company Switcher (Multi-Business)
 
-The header has a dropdown to the right of the Clipboard logo showing the active business name.
-
-- Click it → dropdown lists every company in the Paperclip instance
-- Click a company → switches immediately; all tabs (Agents, Org, Skills, etc.) re-scope to that company
-- **"+ New business"** at the bottom → dialog to create a new company (name + optional description)
-- Active company ID is persisted in `localStorage` (`clipboard.activeCompanyId`), survives refresh
+Header dropdown to the right of the Clipboard logo.
+- Lists every company in the Paperclip instance
+- Check mark on the active one
+- **"+ New business"** opens a create dialog (name + optional description)
+- Active company ID persisted in `localStorage` (`clipboard.activeCompanyId`)
 - Each business has completely separate agents, org chart, tasks, skills, and activity
 
 Implemented in: `ui/src/lib/company.ts` + `ui/src/components/CompanySwitcher.tsx`
@@ -141,21 +189,18 @@ Implemented in: `ui/src/lib/company.ts` + `ui/src/components/CompanySwitcher.tsx
 
 ## AgentDetail Page (`/agents/:id`)
 
-- Agent name, title, status badge, last-active
-- **Edit button** → modal to update name, title, capabilities, persona, cwd
-- **Approve / Pause / Resume / Delete** — context-sensitive, shows Approve (green) when status is `pending_approval`
-- **Send a task** textarea (calls `POST /agents/:id/wakeup`)
-- **Recent tasks** — run cards showing status, summary, tokens, cost; expandable for full output
-- **Role** section — shows capabilities
-- **Personality & style** — shows persona (if set)
-- **Skills** section — toggle list of every skill available for this agent:
-  - Company-managed skills: toggleable on/off
-  - Required skills: shown with a lock icon (always on)
-  - User-installed skills (`~/.claude/skills/`): shown as read-only
-  - Toggling saves immediately via `POST /agents/:id/skills/sync`
-  - "Manage library →" link navigates to the Skills tab
-- **Configuration** panel — model, cwd, adapter, created date
-- **Autonomous schedule** toggle — enables Paperclip's heartbeat scheduler so the agent wakes on a timer without human input; interval options from 15 min to 24 hours
+Sections, top to bottom:
+
+- **Header** — name, title, CEO badge (if applicable), StatusBadge, last-active, Edit / Approve / Pause or Resume / Delete buttons
+- **Send a task** — textarea + Send button (wakeupAgent)
+- **Recent tasks** — expandable run cards with StatusBadge, summary, tokens, cost
+- **Role** — capabilities text
+- **Personality & style** — persona text
+- **Skills** — toggle list of every skill available for this agent. Company-managed skills are toggleable; required/user-installed skills are locked. Toggling saves immediately via `POST /agents/:id/skills/sync`
+- **Memory** — opt-in toggle. Disabled unless the agent has a `cwd`. When enabled: **View memory** opens a modal with the current `memory.md` content; **Clear memory** wipes the file. See "Memory system" below.
+- **Budget** — `$` input for `budgetMonthlyCents`. For **metered agents** (API-key auth) shows the full progress bar (green → amber at 80% → red at 100%) + "Approaching monthly limit" warning at ≥80% + auto-pause banner at 100%. For **subscription agents** shows a blue info block explaining "Subscription — no dollar cap" and makes the input advisory (applies automatically if the agent switches to API-key auth later)
+- **Wake conditions** — toggle "Wake on a schedule" + interval dropdown (30s, 5m, 15m, 30m, 1h, 4h, 12h, 24h). Plus an info block: "Always on — this agent also wakes automatically when a task is assigned." No fake event-trigger checkboxes — see "Verified constraints" below.
+- **Configuration panel** — model, cwd, adapter, created date
 
 ---
 
@@ -179,201 +224,239 @@ HOW YOU BEHAVE
 Follow the task instructions that follow.
 ```
 
-- `agent.capabilities` — the role description set in the form
-- `agent.metadata.persona` — the personality/style text
-- `agent.metadata.delegationContext` — auto-generated by `syncDelegationContext()` whenever the org chart changes; contains the agent's direct reports list and `delegate.py` command
+- `agent.capabilities` — role description
+- `agent.metadata.persona` — personality/style text
+- `agent.metadata.delegationContext` — auto-generated by `syncDelegationContext()` on org changes; contains direct-reports list, `delegate.py` path, command usage, and examples
+
+The CEO agent template's `capabilities` field contains a full **4-step delegation playbook**
+(ASSESS → PLAN → DELEGATE → REPORT BACK) with clear rules: coordinate, don't execute; only delegate to direct reports; flag missing skills to the owner.
 
 ---
 
-## Skills System
+## Tell-Your-CEO Flow (core product experience)
 
-Paperclip has a full skills system in the backend. Clipboard now exposes it.
+1. Owner types a goal into the Tasks tab → "Send to CEO →"
+2. UI finds the CEO agent via `findCeoAgent(agents)` (matches `role === "ceo"` OR title contains "chief executive")
+3. `POST /agents/:ceoId/wakeup` with `wakeReason: "Owner directive via Tell your CEO"`
+4. CEO runs, reads its 4-step playbook + injected delegation context
+5. CEO invokes `python3 <delegate.py path> --from "CEO" --to "<Report>" --task "<ctx>"` for each subtask
+6. Reports execute their work; CEO summarizes back to owner
 
-### How skills work end-to-end
-1. Skills are stored per-company in the Paperclip DB
-2. Each agent has `adapterConfig.paperclipSkillSync.desiredSkills` — an array of skill keys
-3. At runtime, the `claude_local` adapter materializes desired skills into the prompt bundle before calling the Claude CLI
-4. Skills can also come from `~/.claude/skills/` (user-installed, read-only in Clipboard)
-
-### Relevant API endpoints
-```
-GET    /companies/:id/skills                        list company skill library
-POST   /companies/:id/skills                        create a skill (name, slug, markdown)
-POST   /companies/:id/skills/import                 import from GitHub URL / local path / skills.sh
-POST   /companies/:id/skills/scan-projects          auto-scan connected workspaces for SKILL.md
-GET    /companies/:id/skills/:skillId               skill detail + which agents use it
-GET    /companies/:id/skills/:skillId/files         read SKILL.md (or any file in the skill)
-PATCH  /companies/:id/skills/:skillId/files         update SKILL.md content
-DELETE /companies/:id/skills/:skillId               delete a skill
-GET    /agents/:id/skills                           list skills available + enabled for one agent
-POST   /agents/:id/skills/sync                      set desiredSkills array for an agent
-```
-
-### Importing your AIOS skills
-Go to Skills → Import → paste:
-```
-/Users/tiffanychau/Downloads/AIOS/.claude/skills
-```
-Or individual skill subdirectory paths. Then go to each agent's detail page and toggle the skills you want.
+Optional: checkbox "Ask for a plan before starting" prepends
+`"Before delegating any work, show me your delegation plan and wait for my approval."`
+to the prompt, so the CEO replies with its plan instead of immediately delegating.
 
 ---
 
-## Agent-to-Agent Delegation System
+## Memory System (opt-in per agent)
 
-### The delegation script
-`scripts/delegate.py` — agents can call this during a task run to dispatch work to their direct reports.
+**Purpose:** for agents that don't have their own memory (unlike Iris, who has
+AIOS). After every successful run, Clipboard asks the `claude` CLI to summarize
+the run in 3–5 bullets and appends it to `{cwd}/memory.md`. On the next run,
+the `clipboard-memory` skill injects instructions telling the agent to read
+`memory.md` first.
 
-```bash
-python3 /Users/tiffanychau/Downloads/paperclip-claude/scripts/delegate.py \
-  --from "CEO" --to "CMO" --task "Write a product launch tweet thread"
+### Pieces
+
+- **`scripts/memory-writer.py`** — standalone, resilient Python script. Accepts `--agent-id --run-id --agent-name --cwd`. Fetches the run transcript from `/api/heartbeat-runs/:id`, calls `claude -p <prompt>` with a concise summarize prompt, appends a timestamped entry to `memory.md`. If the file exceeds 8000 words, compresses entries older than 30 days into `## Archive — YYYY-MM` sections. Every error exits 0 and logs to stderr — **never blocks or fails a run.**
+- **`skills/clipboard-memory/SKILL.md`** — YAML-frontmatter skill instructing the agent to read `memory.md` at session start, not repeat recorded work, cite past decisions, respect the archive, and not edit the file themselves.
+- **Post-run hook in `server/src/services/heartbeat.ts`** — two additive helpers (`isMemoryEnabled`, `triggerMemoryWriter`) plus a 13-line block right after `finalizeAgentStatus(agent.id, outcome)`. Spawns the Python script detached/unref'd. Only fires when `outcome === "succeeded"` AND `agent.metadata.memory_enabled === true` AND the agent has a `cwd`.
+- **Two additive backend routes** in `server/src/routes/agents.ts`:
+  - `GET /api/agents/:id/memory` → `{ path, exists, content }`
+  - `DELETE /api/agents/:id/memory` → wipes `{cwd}/memory.md`
+- **UI Memory section on AgentDetail** — toggle flips `metadata.memory_enabled`, auto-creates the `clipboard-memory` skill in the company library if missing, adds it to the agent's `desiredSkills`, and offers View/Clear buttons.
+
+### Verified end-to-end
+
+Tested on CTO with a throwaway cwd. After one successful run, a properly-formatted `memory.md` appeared with a timestamped bullet summary. The hook fires reliably and the script handles error paths cleanly.
+
+---
+
+## Budget Caps
+
+Per-agent monthly budgets with UI everywhere: AgentDetail (input + progress
+bar + auto-pause banner), Agents grid (thin coloured bar + warning), Spending
+(Budget column + "Agents at limit" stat).
+
+### The subscription gotcha — important
+
+Paperclip writes `costCents = 0` for `billingType === "subscription_included"`
+runs. Since `spentMonthlyCents` is `SUM(costCents)`, **subscription agents
+never accumulate spend** and their budget would sit at 0% forever. The UI
+handles this honestly:
+
+- `isMeteredAgent(agent)` in `lib/types.ts` returns true if the agent has `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY` in `adapterConfig.env`.
+- **AgentDetail Budget section** — subscription agents see a blue info block ("Subscription — no dollar cap…") instead of the progress bar. Input stays visible, labelled "(inactive while on subscription)" with a note that any cap activates automatically if you switch to API-key auth.
+- **Agents grid BudgetBar** — hidden entirely for subscription agents.
+- **Spending table Budget column** — shows "Subscription" in muted text for subscription agents; real `$X / $Y` only for metered ones.
+- **Agents-at-limit count** — only counts metered agents that are auto-paused.
+
+---
+
+## Visual Polish
+
+Three unified components created this sprint:
+
+- **`StatusBadge`** — one source of truth for every status chip. Maps `running` → "Working" (blue + CSS pulse), `idle`/`active` → "Idle" (gray), `paused` → "Paused" (amber), `pending_approval` → "Pending approval" (purple), `error` → "Error" (red), and run statuses similarly. `compact` prop for tight layouts (org chart cards) renders just a tinted dot.
+- **`EmptyState`** — reusable block with icon + heading + description + optional CTA, used on all four primary tabs.
+- **`Skeleton`** — shimmer primitive plus `AgentCardSkeleton` and `RunRowSkeleton` matching the real content's geometry.
+
+CSS animations (in `ui/src/index.css`):
+
+- `clipboard-shimmer` — 1.5s linear gradient sweep for skeletons
+- `clipboard-status-pulse` — 1.8s opacity pulse for "Working" badges
+
+Color tones: gray / blue / amber / purple / red / green — all `color/10` backgrounds with `color/30` borders for light tinting that works in both light and dark themes.
+
+---
+
+## Backend Extensions
+
+All additive — no core Paperclip logic modified. Each block is clearly commented.
+
+### `server/src/routes/agents.ts`
+- `GET /agents/:id/memory` — read `{cwd}/memory.md`
+- `DELETE /agents/:id/memory` — wipe `{cwd}/memory.md`
+
+### `server/src/services/heartbeat.ts`
+- Module-level helpers `isMemoryEnabled` + `triggerMemoryWriter`
+- 13-line post-run hook block after `finalizeAgentStatus`
+
+### `server/src/routes/company-skills.ts`
+- **`PATCH /companies/:companyId/skills/:skillId`** — rename a skill (update `name` and/or `slug`). Validates slug regex `/^[a-z0-9-]+$/`, checks for 409 slug conflicts in the same company, re-derives the canonical `key` by swapping the trailing path segment (since all key formats end in `/slug`), logs a `company.skill_renamed` activity entry.
+
+---
+
+## Skills Library Cleanup
+
+**State:** the three upstream-Paperclip bundled skills (`paperclip`,
+`paperclip-create-agent`, `paperclip-create-plugin`) have been renamed/removed:
+
+- `skills/paperclip-create-plugin/` — **deleted**
+- `skills/paperclip/` → **renamed to `skills/clipboard-core/`** (display name "Clipboard Core")
+- `skills/paperclip-create-agent/` → **renamed to `skills/clipboard-create-agent/`** (display name "Clipboard — Create Agent")
+
+**Important:** the SKILL.md frontmatters in the two renamed directories now
+contain explicit `slug:` + pretty `name:` fields. The server's reconciler
+(`ensureBundledSkills` in `server/src/services/company-skills.ts`) scans
+`skills/` on every `GET /skills` call and upserts by key; the explicit `slug:`
+keeps the scanner-derived slug consistent with the directory name so renames
+are durable.
+
+**If you rename bundled skills in the future**, always update the frontmatter
+to match:
+
+```yaml
+---
+slug: my-new-slug
+name: My Pretty Display Name
+description: ...
+---
 ```
 
-**Guardrails enforced by the script:**
-1. **Scope check** — `--from` must be a direct manager of `--to` (verified against live Paperclip API). Lateral and skip-level delegation is blocked.
-2. **Loop guard** — tracks the delegation chain via `--chain`; refuses if the target is already in the chain
-3. **Task cap** — max 5 delegations per manager per run (overridable via `DELEGATE_MAX_TASKS` env var)
-4. **Paused block** — refuses to send to a paused agent
-5. **Audit trail** — every successful delegation is appended to `scripts/delegation_audit.log`
-
-Dry-run mode: add `--dry-run` to validate without sending.
-
-### Auto-sync
-`lib/delegation.ts` exports `syncDelegationContext(agents)`. It runs on:
-- Every OrgChart page load
-- After every drag-drop in the org chart
-
-It reads the current `reportsTo` tree, generates delegation instructions for each manager, and PATCHes `metadata.delegationContext` — but only if the content actually changed (no-op writes avoided).
+Without the explicit `slug:`, the scanner derives it from the `name:` field
+which will create duplicate rows every time.
 
 ---
 
-## Approvals System (Pending Agents)
+## Verified Constraints (findings from testing)
 
-Agents created via Paperclip's old hire flow land in `pending_approval` status and need explicit approval to activate. Clipboard now handles this.
-
-**How it works:**
-- On Agents page load, Clipboard fetches `GET /companies/:id/approvals?status=pending`
-- It builds a map of `agentId → approvalId` from the `hire_agent` approval records
-- Any agent card with `pending_approval` status shows a green **Approve** button instead of Pause
-- Clicking Approve calls `POST /approvals/:approvalId/approve` → backend flips the agent to `idle`
-- Same Approve button appears on the AgentDetail header
-
-**The CTO situation (as of session):**
-- CTO was created via original Paperclip UI when `requireBoardApprovalForNewAgents` was true
-- That setting has since been turned off; all new agents created via Clipboard bypass approval
-- CTO can be approved via the Approve button on their card, or deleted and recreated via Clipboard's Add Agent dialog
+1. **Subscription runs have `costCents = 0`.** Documented above under Budget Caps. UI treats subscription agents differently everywhere budget appears.
+2. **Event triggers (`mention`, `comment`, `status_change`, `dependency_resolved`) have no backend dispatch.** Grepped the server — no code reads `runtimeConfig.triggers`. Only `issue_assigned` wakes are hardwired (via `queueIssueAssignmentWakeup`) and fire regardless of any opt-in flag. The Wake Conditions UI was stripped of the fake checkboxes and now shows only the real scheduled-wake toggle plus a truthful "Always on — wakes when a task is assigned" info block.
+3. **`ensureBundledSkills` runs on every `GET /skills`.** It reads `skills/` on disk and upserts by derived key. Keep this in mind when mutating skills via API — if the DB state disagrees with frontmatter, the scan will re-create duplicates on the next read.
+4. **Memory hook fires reliably** but the `claude` CLI call takes ~20–60s to produce a summary. The post-run hook's `spawn` is detached and unref'd so heartbeats never block waiting for it.
 
 ---
 
-## Current Agent Roster
+## Current Agent Roster (Iris company)
 
-All agents live in company `de3f0b6d-4be7-4d3c-8eb8-8e24a6b6da47` ("Iris").
+Company ID: `de3f0b6d-4be7-4d3c-8eb8-8e24a6b6da47`
 
 | Name | Role | Status | Model | Reports To | CWD |
 |------|------|--------|-------|-----------|-----|
-| CEO | ceo | paused | claude-opus-4-7 | — | — |
-| CTO | cto | pending_approval | claude-opus-4-7 | CEO | — |
-| CMO | cmo | idle | claude-sonnet-4-6 | CEO | — |
-| Iris | general | idle | claude-opus-4-7 | CMO | `~/Downloads/AIOS` |
-| Echo | general | idle | claude-sonnet-4-6 | — | `~/Downloads/AIOS` |
+| CEO | ceo | idle | claude-opus-4-7 | — | `~/Downloads/AIOS` |
+| CTO | cto | idle | claude-opus-4-7 | CEO | `~/Downloads/AIOS` |
+| CMO | cmo | paused | claude-sonnet-4-6 | CEO | `~/Downloads/AIOS` |
+| Iris | general | paused | claude-opus-4-7 | CEO | `~/Downloads/AIOS` |
+| Echo | general | active | claude-sonnet-4-6 | Iris | `~/Downloads/AIOS` |
 
-**Notes:**
-- CEO is paused — test agent from early Paperclip exploration. Can be deleted; it has no important runs.
-- CTO: approve via the green Approve button on its card, or delete and recreate.
-- Iris and Echo have `cwd` pointing to `~/Downloads/AIOS` so they run with full access to AIOS skills, context, and scripts.
-- Iris currently reports to CMO — may need reorganization. Use Org tab drag-and-drop.
-- Echo has no manager — floating root; should probably report to Iris or CEO.
-- CTO/CMO/CEO have no `cwd` set — they'll run in Paperclip's default directory. Set via Edit button if they need filesystem access.
-- CEO/CTO/CMO were created via Paperclip's hire flow and use Paperclip's managed instructions bundle (not our custom `promptTemplate`). The `delegationContext` sync still writes to their `metadata`, but won't render in their prompt unless their `promptTemplate` is also updated via Edit.
+CEO has direct reports: CMO, CTO, Iris. Echo reports to Iris.
 
 ---
 
-## Key API Endpoints (Paperclip REST)
+## Key API Endpoints
 
 All prefixed with `http://localhost:3100/api`:
 
 ```
+# Companies
 GET    /companies                                    list companies
 POST   /companies                                    create company
+
+# Agents
 GET    /companies/:id/agents                         list agents
 POST   /companies/:id/agents                         create agent
 GET    /agents/:id                                   get single agent
-PATCH  /agents/:id                                   update agent (name, title, capabilities, metadata, reportsTo, status, runtimeConfig, adapterConfig)
+PATCH  /agents/:id                                   update agent (name, title, capabilities,
+                                                       metadata, reportsTo, status,
+                                                       runtimeConfig, adapterConfig,
+                                                       budgetMonthlyCents)
 DELETE /agents/:id                                   delete agent
-POST   /agents/:id/wakeup                            send ad-hoc task (body: {source, reason, payload: {prompt}, forceFreshSession})
-GET    /companies/:id/heartbeat-runs?agentId=X       list runs for agent
+POST   /agents/:id/wakeup                            send ad-hoc task
+GET    /agents/:id/memory                            read {cwd}/memory.md          [Clipboard add]
+DELETE /agents/:id/memory                            wipe {cwd}/memory.md          [Clipboard add]
+
+# Runs
+GET    /companies/:id/heartbeat-runs?agentId=X       list runs
 GET    /heartbeat-runs/:id                           single run with stdout/stderr
+
+# Activity / costs
 GET    /companies/:id/activity                       audit log
-GET    /companies/:id/costs/summary                  {spendCents, budgetCents, utilizationPercent}
+GET    /companies/:id/costs/summary                  spendCents + utilizationPercent
 GET    /companies/:id/costs/by-agent                 per-agent token/cost breakdown
-GET    /companies/:id/adapters/:type/models          list models for adapter type
-GET    /companies/:id/skills                         list skill library
+GET    /companies/:id/adapters/:type/models          list models
+
+# Skills
+GET    /companies/:id/skills                         list library (auto-rescans on disk)
 POST   /companies/:id/skills                         create skill
-POST   /companies/:id/skills/import                  import skill (GitHub URL / local path)
-POST   /companies/:id/skills/scan-projects           scan workspaces for SKILL.md files
-GET    /companies/:id/skills/:skillId/files          read skill file (default: SKILL.md)
-PATCH  /companies/:id/skills/:skillId/files          update skill file
+PATCH  /companies/:id/skills/:skillId                rename skill (name/slug)      [Clipboard add]
+POST   /companies/:id/skills/import                  import (GitHub/skills.sh/path)
+POST   /companies/:id/skills/scan-projects           scan workspaces for SKILL.md
+GET    /companies/:id/skills/:skillId/files          read skill file
+PATCH  /companies/:id/skills/:skillId/files          update file content
 DELETE /companies/:id/skills/:skillId                delete skill
-GET    /agents/:id/skills                            list + status of skills for one agent
-POST   /agents/:id/skills/sync                       set desiredSkills for an agent
-GET    /companies/:id/approvals?status=pending        list pending approvals
-POST   /approvals/:id/approve                        approve a pending agent hire
-POST   /approvals/:id/reject                         reject a pending agent hire
+
+# Per-agent skill assignment
+GET    /agents/:id/skills                            list + status for this agent
+POST   /agents/:id/skills/sync                       set desiredSkills
+
+# Approvals
+GET    /companies/:id/approvals?status=pending       list pending approvals
+POST   /approvals/:id/approve                        approve a pending hire
+POST   /approvals/:id/reject                         reject a pending hire
 ```
 
 ---
 
-## Add Agent Form — Supported Adapters
+## Known Issues / Future Work
 
-The form has an "AI engine" selector:
-- **Claude** (`claude_local`) — uses `claude` CLI; subscription or API key auth
-- **Gemini** (`gemini_local`) — uses `gemini` CLI; Google account or Gemini API key
-- **OpenAI Codex** (`codex_local`) — uses `codex` CLI; needs OpenAI API key (ChatGPT Plus does NOT include API access)
-- **OpenCode** (`opencode_local`) — open-source coding agent
-- **Custom process** (`process`) — any shell command
-
-The auth toggle and API key field update their labels to match the selected engine.
-
----
-
-## Multi-Model / Multi-Machine Architecture Notes
-
-For scaling beyond one machine:
-- **Per-agent model selection**: assign cheaper models (Gemini, Sonnet, Ollama) to worker agents; reserve Opus for executive/decision-making agents
-- **Subscription limits are per-account**, not per-machine — spreading agents across machines doesn't increase capacity under one subscription
-- **`http` adapter pattern**: run a lightweight HTTP server on a remote machine that accepts a prompt and shells out to a local Claude/Gemini CLI; register it as an `http`-type agent in Clipboard
-- **Free local models**: Ollama (runs Llama, Mistral, etc. locally, no subscription) can be wired via the `process` adapter for low-level tasks
-
----
-
-## Known Issues / Pending Work
-
-1. **CTO in `pending_approval`** — use the green Approve button on its agent card. Or delete and recreate.
-2. **CEO is paused** — test agent. Can be deleted; no important runs.
-3. **Iris reports to CMO** — may not be the intended structure. Reorganize via Org tab.
-4. **Echo has no manager** — floating root; should report to Iris or CEO.
-5. **CTO/CMO/CEO have no `cwd` set** — set via Edit button if they need filesystem access.
-6. **CEO/CTO/CMO don't have the new `promptTemplate`** — they use Paperclip's managed instructions bundle instead. `delegationContext` still writes to their `metadata` but won't render in their prompt unless `promptTemplate` is also updated via Edit on their detail page.
-
----
-
-## What "Proactive Agents" Looks Like End-to-End
-
-1. Open CEO's detail page → turn on "Autonomous schedule" → set to "Every 1 hour"
-2. CEO wakes each hour; their injected prompt includes their direct reports and `delegate.py` commands
-3. CEO decides CTO should review a PR → calls: `python3 /path/to/delegate.py --from "CEO" --to "CTO" --task "Review PR #42 for security issues"`
-4. `delegate.py` validates the chain, calls `POST /agents/CTO-id/wakeup`, logs the delegation
-5. CTO wakes, sees "Task delegated by CEO", executes, finishes
-6. All activity visible in the Activity and Tasks tabs
+1. **Event triggers** (`mention`, `comment`, `status_change`, `dependency_resolved`) require a backend dispatcher if we ever want them to actually work. Currently the UI doesn't pretend to support them.
+2. **Subscription budget caps** don't enforce. If a real cap is needed for subscription-covered runs, the backend would need to track imputed spend (the `api-equivalent` cost Paperclip already computes) or we'd need to implement a token-count cap instead of a dollar cap.
+3. **CEO/CTO/CMO** (created via old Paperclip hire flow) use Paperclip's managed instructions bundle instead of Clipboard's custom `promptTemplate`. The `delegationContext` sync still writes to their `metadata`, but to render it in the prompt they need their `promptTemplate` updated via an Edit on their detail page. Any agent created via Clipboard's Add Agent dialog is already wired correctly.
+4. **`VITE_CLIPBOARD_ROOT`** — for portability to other machines, set this in `ui/.env.local` to the absolute path of the Clipboard repo. Falls back to `/Users/tiffanychau/Downloads/paperclip-claude` if not set.
 
 ---
 
 ## Files to Read for Deeper Context
 
-- `ui/src/lib/types.ts` — all TypeScript types including skill and approval types
-- `ui/src/lib/company.ts` — active company store (localStorage + useSyncExternalStore)
-- `ui/src/lib/delegation.ts` — delegation context generator
-- `ui/src/pages/Skills.tsx` — Skills library page
-- `ui/src/components/CompanySwitcher.tsx` — business switcher dropdown
-- `scripts/delegate.py` — full delegation script with inline docs
-- `packages/adapters/claude-local/src/server/execute.ts` — how Paperclip builds and sends prompts to Claude CLI
-- `packages/shared/src/validators/agent.ts` — what fields can be PATCHed on an agent
+- `ui/src/lib/types.ts` — all types + helpers (`isMeteredAgent`, `isCeoAgent`, `findCeoAgent`, run accessors)
+- `ui/src/lib/delegation.ts` — delegation context generator + portable path resolution
+- `ui/src/lib/templates.ts` — CEO template's 4-step delegation playbook
+- `ui/src/components/StatusBadge.tsx` — status-pill mapping for agents + runs
+- `ui/src/pages/AgentDetail.tsx` — most of the per-agent feature surface
+- `scripts/memory-writer.py` — full memory summariser with inline docs
+- `scripts/delegate.py` — delegation script with guardrails
+- `server/src/routes/company-skills.ts` — includes new `PATCH /skills/:id` route
+- `server/src/services/heartbeat.ts` — memory-writer hook at ~line 4115
+- `server/src/routes/agents.ts` — memory read/clear routes near the company-agents list route
+- `skills/clipboard-*/SKILL.md` — each has the new `slug: + name:` frontmatter pattern

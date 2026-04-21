@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Activity as ActivityIcon, Loader2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useDefaultCompany } from "../lib/company";
 import { formatRelativeTime } from "../lib/format";
 import type { ActivityRow, Agent } from "../lib/types";
+import { EmptyState } from "../components/EmptyState";
 
 // Friendly translations for Paperclip's audit-log action codes.
 const ACTION_LABELS: Record<string, string> = {
@@ -104,11 +105,17 @@ export function ActivityPage() {
           <Loader2 className="size-4 animate-spin" /> Loading…
         </div>
       ) : filtered.length === 0 ? (
-        <div className="mt-8 rounded-md border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
-          {actionFilter
-            ? "No events match this filter."
-            : "Nothing has happened yet. Create an agent or send a task."}
-        </div>
+        actionFilter ? (
+          <div className="mt-8 rounded-md border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
+            No events match this filter.
+          </div>
+        ) : (
+          <EmptyState
+            icon={<ActivityIcon className="size-6" strokeWidth={1.5} />}
+            title="Nothing yet"
+            description="Agent activity will appear here as your team works."
+          />
+        )
       ) : (
         <ol className="mt-6 space-y-2">
           {filtered.map((e) => (

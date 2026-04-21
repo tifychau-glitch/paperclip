@@ -4,11 +4,37 @@
 import { api } from "./api";
 import type { Agent } from "./types";
 
-const DELEGATE_SCRIPT =
-  "/Users/tiffanychau/Downloads/paperclip-claude/scripts/delegate.py";
+// Preferred: VITE_CLIPBOARD_ROOT in ui/.env or ui/.env.local for portability.
+// Fallback: Tiffany's dev-install path so the app keeps working out-of-the-box
+// on the original machine. When both are empty, emit the literal placeholder
+// "[PROJECT_ROOT]/scripts/delegate.py" as a last resort.
+const DEFAULT_CLIPBOARD_ROOT = "/Users/tiffanychau/Downloads/paperclip-claude";
+
+function resolveClipboardRoot(): string {
+  // `import.meta.env` is populated by Vite at build time. The UI tsconfig
+  // doesn't pull in `vite/client` types, so we read it through a defensive
+  // any-cast rather than adding a .d.ts file (keeps the change scoped to
+  // this one file).
+  const meta = import.meta as unknown as { env?: Record<string, unknown> };
+  const fromEnv = meta.env?.VITE_CLIPBOARD_ROOT;
+  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
+    return fromEnv.trim().replace(/\/+$/, "");
+  }
+  if (DEFAULT_CLIPBOARD_ROOT) {
+    return DEFAULT_CLIPBOARD_ROOT.replace(/\/+$/, "");
+  }
+  return "";
+}
+
+function resolveDelegateScriptPath(): string {
+  const root = resolveClipboardRoot();
+  return root ? `${root}/scripts/delegate.py` : "[PROJECT_ROOT]/scripts/delegate.py";
+}
 
 function buildDelegationContext(manager: Agent, reports: Agent[]): string {
   if (reports.length === 0) return "";
+
+  const scriptPath = resolveDelegateScriptPath();
 
   const reportList = reports
     .map((r) => {
@@ -23,20 +49,22 @@ function buildDelegationContext(manager: Agent, reports: Agent[]): string {
     .slice(0, 2)
     .map(
       (r) =>
-        `  python3 ${DELEGATE_SCRIPT} --from "${manager.name}" --to "${r.name}" --task "Describe the task here"`,
+        `  python3 ${scriptPath} --from "${manager.name}" --to "${r.name}" --task "Describe the task here"`,
     )
     .join("\n");
 
   return `## YOUR DIRECT REPORTS
 
+Your direct reports:
+${reportList}
+
+Your delegate.py script is at: ${scriptPath}
+
 You can proactively delegate tasks to your direct reports when you identify work in their domain. Use the delegation script:
 
 \`\`\`
-python3 ${DELEGATE_SCRIPT} --from "${manager.name}" --to "<report name>" --task "<task prompt>"
+python3 ${scriptPath} --from "${manager.name}" --to "<report name>" --task "<task prompt>"
 \`\`\`
-
-Your direct reports:
-${reportList}
 
 Examples:
 ${examples}

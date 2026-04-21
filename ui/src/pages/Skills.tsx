@@ -13,6 +13,7 @@ import {
 import { api } from "../lib/api";
 import { useDefaultCompany } from "../lib/company";
 import type { CompanySkillListItem } from "../lib/types";
+import { EmptyState } from "../components/EmptyState";
 
 export function SkillsPage() {
   const company = useDefaultCompany();
@@ -114,9 +115,12 @@ export function SkillsPage() {
           ))}
         </div>
       ) : (
-        <div className="rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-          No skills yet. Create one, import from GitHub, or scan your project folders.
-        </div>
+        <EmptyState
+          icon={<BookOpen className="size-6" strokeWidth={1.5} />}
+          title="No skills yet"
+          description="Add a skill to give your agents specialized knowledge and behavior."
+          action={{ label: "New skill", onClick: () => setShowNew(true) }}
+        />
       )}
 
       {showNew && company.data && (

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Send } from "lucide-react";
+import { AlertTriangle, ListChecks, Loader2, Send } from "lucide-react";
 import { api } from "../lib/api";
 import { useDefaultCompany } from "../lib/company";
 import {
@@ -11,6 +11,7 @@ import {
   formatUsd,
 } from "../lib/format";
 import {
+  findCeoAgent,
   runBilling,
   runDurationMs,
   runModel,
@@ -20,6 +21,9 @@ import {
   type Agent,
   type HeartbeatRun,
 } from "../lib/types";
+import { EmptyState } from "../components/EmptyState";
+import { RunRowSkeleton } from "../components/Skeleton";
+import { StatusBadge } from "../components/StatusBadge";
 
 export function TasksPage() {
   const company = useDefaultCompany();
@@ -73,7 +77,7 @@ export function TasksPage() {
       <div>
         <h1 className="text-2xl font-semibold">Tasks</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Send a one-shot task to any agent, then watch it land below.
+          Tell your CEO what you want to accomplish. They'll figure out who handles it.
         </p>
       </div>
 
@@ -89,19 +93,34 @@ export function TasksPage() {
           </p>
         </div>
       ) : (
-        <ComposeTask agents={agents.data ?? []} onSent={() => runsQueries.forEach((q) => q.refetch())} />
+        <TaskComposer
+          agents={agents.data ?? []}
+          onSent={() => runsQueries.forEach((q) => q.refetch())}
+        />
       )}
 
       <section>
         <h2 className="mb-3 text-sm font-medium text-muted-foreground uppercase tracking-wide">
           Recent tasks (all agents)
         </h2>
-        {allRuns.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-            {activeAgents.length === 0
-              ? "No active agents to send tasks to."
-              : "No tasks yet. Send one above to see it appear here."}
+        {runsQueries.length > 0 &&
+        runsQueries.some((q) => q.isLoading) &&
+        allRuns.length === 0 ? (
+          <div className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <RunRowSkeleton key={i} />
+            ))}
           </div>
+        ) : allRuns.length === 0 ? (
+          <EmptyState
+            icon={<ListChecks className="size-6" strokeWidth={1.5} />}
+            title="No tasks yet"
+            description={
+              activeAgents.length === 0
+                ? "No active agents to send tasks to."
+                : "Tell your CEO what you want to accomplish."
+            }
+          />
         ) : (
           <div className="space-y-2">
             {allRuns.map((r) => (
@@ -111,6 +130,152 @@ export function TasksPage() {
         )}
       </section>
     </div>
+  );
+}
+
+// Top-level composer: always opens in "tell your CEO" mode. A subtle link
+// flips to the legacy direct-to-agent composer for power users.
+function TaskComposer({ agents, onSent }: { agents: Agent[]; onSent: () => void }) {
+  const [mode, setMode] = useState<"ceo" | "direct">("ceo");
+
+  if (mode === "direct") {
+    return (
+      <div className="space-y-3">
+        <button
+          type="button"
+          onClick={() => setMode("ceo")}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          ← Back to Tell your CEO
+        </button>
+        <ComposeTask agents={agents} onSent={onSent} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <TellCeoComposer agents={agents} onSent={onSent} />
+      <div className="text-right">
+        <button
+          type="button"
+          onClick={() => setMode("direct")}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          Or send directly to a specific agent ↓
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TellCeoComposer({
+  agents,
+  onSent,
+}: {
+  agents: Agent[];
+  onSent: () => void;
+}) {
+  const qc = useQueryClient();
+  const ceo = findCeoAgent(agents);
+  const [prompt, setPrompt] = useState("");
+  const [askForPlan, setAskForPlan] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const send = useMutation({
+    mutationFn: async () => {
+      if (!ceo) throw new Error("No CEO agent in this company.");
+      const base = prompt.trim();
+      if (!base) throw new Error("Enter a goal.");
+      const prefix = askForPlan
+        ? "Before delegating any work, show me your delegation plan and wait for my approval.\n\n"
+        : "";
+      return api.wakeupAgent(ceo.id, {
+        reason: "Owner directive via Tell your CEO",
+        payload: { prompt: prefix + base },
+        forceFreshSession: true,
+      });
+    },
+    onSuccess: () => {
+      setPrompt("");
+      setError(null);
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      onSent();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
+  return (
+    <section>
+      <div className="rounded-md border border-border bg-card p-5">
+        <h2 className="text-lg font-semibold">What do you want to accomplish?</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Your CEO will figure out who handles it.
+        </p>
+
+        {!ceo ? (
+          <div className="mt-4 flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" />
+            <div>
+              <div className="font-medium">No CEO agent found.</div>
+              <div className="mt-0.5 text-muted-foreground">
+                Add one from the{" "}
+                <Link to="/agents" className="text-primary hover:underline">
+                  Agents tab
+                </Link>{" "}
+                to use this feature.
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              disabled={send.isPending}
+              rows={4}
+              placeholder={
+                "e.g. Get a social post written about our latest deal, or: I want to bring in an extra $5k this month — figure out what we should focus on."
+              }
+              className="mt-4 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+            />
+            <label
+              className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
+              title="CEO will outline the delegation plan and wait for your approval before sending work to agents"
+            >
+              <input
+                type="checkbox"
+                checked={askForPlan}
+                onChange={(e) => setAskForPlan(e.target.checked)}
+                className="size-3.5 rounded border-border accent-primary"
+              />
+              Ask for a plan before starting
+            </label>
+
+            {error && <div className="mt-3 text-sm text-destructive">{error}</div>}
+
+            <div className="mt-4 flex items-center justify-between">
+              <div className="text-xs text-muted-foreground">
+                Goes to {ceo.name}
+                {ceo.title ? ` (${ceo.title})` : ""}.
+              </div>
+              <button
+                onClick={() => send.mutate()}
+                disabled={send.isPending || !prompt.trim()}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {send.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Send className="size-4" />
+                )}
+                Send to CEO →
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -213,15 +378,6 @@ function RunRow({ run }: { run: HeartbeatRun & { agentName: string } }) {
       : billing.kind === "api"
       ? formatUsd(billing.usd)
       : "—";
-  const statusTone =
-    run.status === "running"
-      ? "bg-blue-500/10 text-blue-400 border-blue-500/30"
-      : run.status === "succeeded"
-      ? "bg-green-500/10 text-green-400 border-green-500/30"
-      : run.status === "failed"
-      ? "bg-red-500/10 text-red-400 border-red-500/30"
-      : "bg-muted/50 text-muted-foreground border-border";
-
   return (
     <div className="rounded-md border border-border bg-card p-3">
       <button
@@ -229,9 +385,7 @@ function RunRow({ run }: { run: HeartbeatRun & { agentName: string } }) {
         className="flex w-full flex-wrap items-center justify-between gap-2 text-left"
       >
         <div className="flex min-w-0 items-center gap-3">
-          <span className={`rounded-full border px-2 py-0.5 text-xs ${statusTone}`}>
-            {run.status}
-          </span>
+          <StatusBadge status={run.status} />
           <Link
             to={`/agents/${run.agentId}`}
             onClick={(e) => e.stopPropagation()}

@@ -1,3 +1,9 @@
+# Clipboard
+
+> **This is Clipboard** — a simplified business-owner interface built on top of the open-source Paperclip backend. The Paperclip documentation below applies to the underlying engine.
+
+---
+
 <p align="center">
   <img src="doc/assets/header.png" alt="Paperclip — runs your business" width="720" />
 </p>

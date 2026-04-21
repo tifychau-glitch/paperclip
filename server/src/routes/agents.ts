@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import fsPromises from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
@@ -1022,6 +1023,64 @@ export function agentRoutes(db: Db) {
       res.json(snapshot);
     },
   );
+
+  // --- Clipboard session memory (additive) ---
+  // Reads/clears {cwd}/memory.md for agents that have memory_enabled in
+  // metadata. No file creation — only reads existing content and wipes on demand.
+  function resolveAgentMemoryPath(agent: { adapterConfig?: unknown }): string | null {
+    const cfg = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+    const cwd = typeof cfg.cwd === "string" ? cfg.cwd.trim() : "";
+    if (!cwd) return null;
+    const absolute = path.isAbsolute(cwd) ? cwd : path.resolve(cwd);
+    return path.join(absolute, "memory.md");
+  }
+
+  router.get("/agents/:id/memory", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    const memoryPath = resolveAgentMemoryPath(agent);
+    if (!memoryPath) {
+      res.json({ path: null, exists: false, content: "", reason: "no_cwd" });
+      return;
+    }
+    try {
+      const content = await fsPromises.readFile(memoryPath, "utf-8");
+      res.json({ path: memoryPath, exists: true, content });
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") {
+        res.json({ path: memoryPath, exists: false, content: "" });
+        return;
+      }
+      res.status(500).json({ error: `Failed to read memory: ${String(err)}` });
+    }
+  });
+
+  router.delete("/agents/:id/memory", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    const memoryPath = resolveAgentMemoryPath(agent);
+    if (!memoryPath) {
+      res.status(422).json({ error: "Agent has no working directory configured" });
+      return;
+    }
+    try {
+      await fsPromises.rm(memoryPath, { force: true });
+      res.json({ ok: true, path: memoryPath });
+    } catch (err) {
+      res.status(500).json({ error: `Failed to clear memory: ${String(err)}` });
+    }
+  });
 
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;

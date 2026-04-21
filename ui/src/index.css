@@ -852,3 +852,37 @@ a.paperclip-project-mention-chip {
 [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
 }
+
+/* Clipboard UI: skeleton shimmer + status-badge pulse */
+@keyframes clipboard-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.clipboard-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--muted) 40%, transparent) 0%,
+    color-mix(in oklab, var(--muted) 85%, transparent) 50%,
+    color-mix(in oklab, var(--muted) 40%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: clipboard-shimmer 1.5s linear infinite;
+}
+
+@keyframes clipboard-status-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.clipboard-status-pulse {
+  animation: clipboard-status-pulse 1.8s ease-in-out infinite;
+}

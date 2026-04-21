@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { useDefaultCompany } from "../lib/company";
 import { syncDelegationContext } from "../lib/delegation";
 import type { Agent } from "../lib/types";
+import { StatusBadge } from "../components/StatusBadge";
 
 type TreeNode = { agent: Agent; children: TreeNode[] };
 
@@ -98,8 +99,9 @@ export function OrgChartPage() {
 
   if (company.isLoading || agents.isLoading) {
     return (
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" /> Loading…
+      <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 text-muted-foreground">
+        <Loader2 className="size-6 animate-spin" />
+        <div className="text-sm">Loading org chart…</div>
       </div>
     );
   }
@@ -118,7 +120,7 @@ export function OrgChartPage() {
       </div>
 
       {empty ? (
-        <div className="mt-12 rounded-md border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
+        <div className="mt-12 rounded-lg border border-dashed border-border bg-card/30 p-12 text-center text-sm text-muted-foreground">
           No agents yet. Add some on the Agents tab.
         </div>
       ) : (
@@ -290,7 +292,7 @@ function AgentBox({
             <div className="truncate text-xs text-muted-foreground">{agent.title}</div>
           )}
         </div>
-        <StatusDot status={agent.status} />
+        <StatusBadge status={agent.status} compact className="mt-1" />
       </div>
       <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
         <span className="font-mono truncate">
@@ -329,22 +331,6 @@ function AgentBox({
       )}
     </div>
   );
-}
-
-function StatusDot({ status }: { status: Agent["status"] }) {
-  const tone =
-    status === "running"
-      ? "bg-green-500"
-      : status === "active" || status === "idle"
-      ? "bg-blue-500"
-      : status === "paused"
-      ? "bg-yellow-500"
-      : status === "error"
-      ? "bg-red-500"
-      : status === "pending_approval"
-      ? "bg-purple-500"
-      : "bg-muted-foreground";
-  return <span className={`mt-1 size-2 shrink-0 rounded-full ${tone}`} title={status} />;
 }
 
 function AssignTaskModal({

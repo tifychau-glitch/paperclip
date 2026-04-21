@@ -1,5 +1,7 @@
 import { Router, type Request } from "express";
+import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { companySkills as companySkillsTable } from "@paperclipai/db";
 import {
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
@@ -259,6 +261,132 @@ export function companySkillRoutes(db: Db) {
       res.json(result);
     },
   );
+
+  // Rename a skill (update name and/or slug). The `key` is automatically
+  // re-derived when slug changes — every canonical-key format ends with the
+  // slug as its final path segment, so swapping the last segment keeps the
+  // key consistent for any future agent that references it.
+  router.patch("/companies/:companyId/skills/:skillId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    await assertCanMutateCompanySkills(req, companyId);
+
+    const body = (req.body ?? {}) as { name?: unknown; slug?: unknown };
+    const hasName = typeof body.name === "string";
+    const hasSlug = typeof body.slug === "string";
+    if (!hasName && !hasSlug) {
+      res.status(422).json({ error: "Provide at least one of: name, slug." });
+      return;
+    }
+
+    const SLUG_RE = /^[a-z0-9-]+$/;
+    const nextName = hasName ? (body.name as string).trim() : null;
+    const nextSlug = hasSlug ? (body.slug as string).trim() : null;
+    if (hasName && (nextName === null || nextName === "")) {
+      res.status(422).json({ error: "name must be a non-empty string." });
+      return;
+    }
+    if (hasSlug && (!nextSlug || !SLUG_RE.test(nextSlug))) {
+      res
+        .status(422)
+        .json({ error: "slug must contain only lowercase letters, numbers, and hyphens." });
+      return;
+    }
+
+    const existing = await db
+      .select()
+      .from(companySkillsTable)
+      .where(
+        and(
+          eq(companySkillsTable.id, skillId),
+          eq(companySkillsTable.companyId, companyId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!existing) {
+      res.status(404).json({ error: "Skill not found" });
+      return;
+    }
+
+    // Compute the next key when slug changes: replace the trailing segment.
+    let nextKey: string | null = null;
+    if (nextSlug && nextSlug !== existing.slug) {
+      const segments = existing.key.split("/");
+      segments[segments.length - 1] = nextSlug;
+      nextKey = segments.join("/");
+
+      // Conflict check: another skill in this company already uses the new
+      // slug or the derived key. Return 409 if so.
+      const siblings = await db
+        .select({
+          id: companySkillsTable.id,
+          slug: companySkillsTable.slug,
+          key: companySkillsTable.key,
+          name: companySkillsTable.name,
+        })
+        .from(companySkillsTable)
+        .where(
+          and(
+            eq(companySkillsTable.companyId, companyId),
+            ne(companySkillsTable.id, skillId),
+          ),
+        );
+      const conflict = siblings.find(
+        (s) => s.slug === nextSlug || s.key === nextKey,
+      );
+      if (conflict) {
+        res.status(409).json({
+          error: `Slug "${nextSlug}" is already used by skill "${conflict.name}".`,
+        });
+        return;
+      }
+    }
+
+    const patch: Partial<typeof companySkillsTable.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (nextName !== null) patch.name = nextName;
+    if (nextSlug !== null) patch.slug = nextSlug;
+    if (nextKey !== null) patch.key = nextKey;
+
+    await db
+      .update(companySkillsTable)
+      .set(patch)
+      .where(
+        and(
+          eq(companySkillsTable.id, skillId),
+          eq(companySkillsTable.companyId, companyId),
+        ),
+      );
+
+    const updated = await svc.detail(companyId, skillId);
+    if (!updated) {
+      res.status(404).json({ error: "Skill not found after update" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_renamed",
+      entityType: "company_skill",
+      entityId: updated.id,
+      details: {
+        previousName: existing.name,
+        previousSlug: existing.slug,
+        previousKey: existing.key,
+        name: updated.name,
+        slug: updated.slug,
+        key: updated.key,
+      },
+    });
+
+    res.json(updated);
+  });
 
   router.delete("/companies/:companyId/skills/:skillId", async (req, res) => {
     const companyId = req.params.companyId as string;

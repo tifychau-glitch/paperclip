@@ -1,5 +1,6 @@
 ---
-name: paperclip-create-agent
+slug: clipboard-create-agent
+name: Clipboard — Create Agent
 description: >
   Create new agents in Paperclip with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,

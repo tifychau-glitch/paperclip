@@ -194,4 +194,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ desiredSkills }),
     }),
+
+  // Memory (Clipboard session memory stored at {cwd}/memory.md)
+  getAgentMemory: (agentId: string) =>
+    request<{
+      path: string | null;
+      exists: boolean;
+      content: string;
+      reason?: string;
+    }>(`/agents/${agentId}/memory`),
+  clearAgentMemory: (agentId: string) =>
+    request<{ ok: boolean; path: string }>(`/agents/${agentId}/memory`, {
+      method: "DELETE",
+    }),
 };

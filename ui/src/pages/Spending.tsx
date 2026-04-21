@@ -5,6 +5,7 @@ import { Loader2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useDefaultCompany } from "../lib/company";
 import { formatTokens, formatUsd } from "../lib/format";
+import { isMeteredAgent, type Agent } from "../lib/types";
 
 export function SpendingPage() {
   const company = useDefaultCompany();
@@ -23,6 +24,20 @@ export function SpendingPage() {
     enabled: !!companyId,
     refetchInterval: 10_000,
   });
+
+  const agents = useQuery({
+    queryKey: ["agents", companyId],
+    queryFn: () => api.listAgents(companyId!),
+    enabled: !!companyId,
+    refetchInterval: 10_000,
+  });
+
+  // Map agentId → agent for budget lookup
+  const agentMap = useMemo(() => {
+    const m = new Map<string, Agent>();
+    for (const a of agents.data ?? []) m.set(a.id, a);
+    return m;
+  }, [agents.data]);
 
   const totals = useMemo(() => {
     if (!byAgent.data) return null;
@@ -48,6 +63,19 @@ export function SpendingPage() {
       subscriptionRunCount,
     };
   }, [byAgent.data]);
+
+  // Count agents paused because of budget exhaustion. Only metered agents
+  // can be auto-paused by budget — subscription agents' costCents never
+  // increments, so a paused subscription agent was paused for other reasons.
+  const agentsAtLimit = useMemo(() => {
+    return (agents.data ?? []).filter(
+      (a) =>
+        a.status === "paused" &&
+        a.budgetMonthlyCents != null &&
+        a.budgetMonthlyCents > 0 &&
+        isMeteredAgent(a),
+    ).length;
+  }, [agents.data]);
 
   if (company.isLoading) {
     return (
@@ -85,9 +113,10 @@ export function SpendingPage() {
           hint={apiSpendUsd === 0 ? "All on subscription" : "From API-key agents"}
         />
         <Stat
-          label="Active agents"
-          value={String(byAgent.data?.length ?? 0)}
-          hint=""
+          label="Agents at limit"
+          value={String(agentsAtLimit)}
+          hint={agentsAtLimit === 0 ? "All within budget" : "Auto-paused by budget"}
+          alert={agentsAtLimit > 0}
         />
       </section>
 
@@ -114,12 +143,30 @@ export function SpendingPage() {
                   <Th align="right">Cached</Th>
                   <Th align="right">Output</Th>
                   <Th align="right">API spend</Th>
+                  <Th align="right">Budget</Th>
                 </tr>
               </thead>
               <tbody>
                 {byAgent.data.map((row) => {
                   const subRuns = row.subscriptionRunCount;
                   const apiRuns = row.apiRunCount;
+                  const agent = agentMap.get(row.agentId);
+                  const metered = agent ? isMeteredAgent(agent) : false;
+                  const budget = agent?.budgetMonthlyCents ?? null;
+                  const spent = agent?.spentMonthlyCents ?? 0;
+                  const pct =
+                    budget && metered
+                      ? Math.min(100, Math.round((spent / budget) * 100))
+                      : null;
+                  const budgetColor =
+                    pct == null
+                      ? ""
+                      : pct >= 100
+                      ? "text-red-400"
+                      : pct >= 80
+                      ? "text-amber-400"
+                      : "text-muted-foreground";
+
                   return (
                     <tr key={row.agentId} className="border-b border-border last:border-0">
                       <Td>
@@ -145,6 +192,22 @@ export function SpendingPage() {
                       <Td align="right" mono>
                         {formatUsd(row.costCents / 100)}
                       </Td>
+                      <Td align="right">
+                        {!metered ? (
+                          <span
+                            className="text-muted-foreground/70"
+                            title="Subscription agents don't incur per-dollar cost. Budget is inactive."
+                          >
+                            Subscription
+                          </span>
+                        ) : budget == null ? (
+                          <span className="text-muted-foreground/60">No limit</span>
+                        ) : (
+                          <span className={budgetColor}>
+                            {formatUsd(spent / 100)} / {formatUsd(budget / 100)}
+                          </span>
+                        )}
+                      </Td>
                     </tr>
                   );
                 })}
@@ -157,11 +220,21 @@ export function SpendingPage() {
   );
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
+function Stat({
+  label,
+  value,
+  hint,
+  alert,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  alert?: boolean;
+}) {
   return (
-    <div className="rounded-md border border-border bg-card p-4">
+    <div className={`rounded-md border bg-card p-4 ${alert ? "border-red-500/40" : "border-border"}`}>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 text-2xl font-semibold">{value}</div>
+      <div className={`mt-1 text-2xl font-semibold ${alert ? "text-red-400" : ""}`}>{value}</div>
       {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
     </div>
   );

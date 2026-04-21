@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn as spawnChild } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1485,6 +1486,55 @@ function resolveNextSessionState(input: {
     displayId,
     legacySessionId,
   };
+}
+
+// ---- Clipboard session-memory hook (additive, non-blocking) ----
+// Fires scripts/memory-writer.py after a run completes for agents that opt in
+// via metadata.memory_enabled. Never throws — errors are logged and swallowed.
+function triggerMemoryWriter(params: {
+  agentId: string;
+  runId: string;
+  agentName: string;
+  cwd: string;
+}): void {
+  try {
+    // Resolve the repo root from this file: server/src/services/heartbeat.ts
+    // walks up three levels to the repo root, then into scripts/.
+    const here = fileURLToPath(import.meta.url);
+    const repoRoot = path.resolve(path.dirname(here), "..", "..", "..");
+    const script = path.join(repoRoot, "scripts", "memory-writer.py");
+    const child = spawnChild(
+      "python3",
+      [
+        script,
+        "--agent-id",
+        params.agentId,
+        "--run-id",
+        params.runId,
+        "--agent-name",
+        params.agentName,
+        "--cwd",
+        params.cwd,
+      ],
+      {
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env },
+      },
+    );
+    // Let it run in the background without keeping the parent alive.
+    child.on("error", (err) => {
+      logger.warn({ err, runId: params.runId }, "memory-writer spawn failed");
+    });
+    child.unref();
+  } catch (err) {
+    logger.warn({ err, runId: params.runId }, "memory-writer hook failed");
+  }
+}
+
+function isMemoryEnabled(agent: { metadata?: unknown }): boolean {
+  const md = (agent.metadata ?? {}) as Record<string, unknown>;
+  return md.memory_enabled === true;
 }
 
 export function heartbeatService(db: Db) {
@@ -4099,6 +4149,21 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // Clipboard session memory: fire-and-forget post-run summarizer.
+      // Only runs for successful runs on agents that opted in and have a cwd.
+      if (outcome === "succeeded" && isMemoryEnabled(agent)) {
+        const adapterCfg = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+        const cwd = typeof adapterCfg.cwd === "string" ? adapterCfg.cwd.trim() : "";
+        if (cwd) {
+          triggerMemoryWriter({
+            agentId: agent.id,
+            runId: run.id,
+            agentName: agent.name,
+            cwd,
+          });
+        }
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",

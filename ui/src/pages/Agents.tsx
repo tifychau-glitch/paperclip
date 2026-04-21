@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, Pause, Play, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Pause, Play, Plus, Trash2, UserPlus } from "lucide-react";
 import { api } from "../lib/api";
 import { useDefaultCompany } from "../lib/company";
 import { formatRelativeTime } from "../lib/format";
-import type { Agent } from "../lib/types";
+import { isCeoAgent, isMeteredAgent, type Agent } from "../lib/types";
 import { AddAgentDialog } from "../components/AddAgentDialog";
+import { EmptyState } from "../components/EmptyState";
+import { AgentCardSkeleton } from "../components/Skeleton";
+import { StatusBadge } from "../components/StatusBadge";
 
 export function AgentsPage() {
   const company = useDefaultCompany();
@@ -62,11 +65,18 @@ export function AgentsPage() {
       </div>
 
       {agents.isLoading ? (
-        <div className="mt-8 flex items-center gap-2 text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" /> Loading agents…
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <AgentCardSkeleton key={i} />
+          ))}
         </div>
       ) : agents.data && agents.data.length === 0 ? (
-        <EmptyState onAdd={() => setAdding(true)} />
+        <EmptyState
+          icon={<UserPlus className="size-6" strokeWidth={1.5} />}
+          title="No agents yet"
+          description="Add your first agent to get started."
+          action={{ label: "Add agent", onClick: () => setAdding(true) }}
+        />
       ) : (
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {agents.data
@@ -92,39 +102,32 @@ export function AgentsPage() {
   );
 }
 
-function EmptyState({ onAdd }: { onAdd: () => void }) {
+function BudgetBar({ agent }: { agent: Agent }) {
+  const budget = agent.budgetMonthlyCents;
+  if (budget == null || budget === 0) return null;
+  // Subscription agents don't accumulate costCents, so the bar would sit at
+  // 0% forever and mislead the user. Hide it and let the AgentDetail page
+  // explain the nuance.
+  if (!isMeteredAgent(agent)) return null;
+  const spent = agent.spentMonthlyCents ?? 0;
+  const pct = Math.min(100, Math.round((spent / budget) * 100));
+  const isAtLimit = pct >= 100;
+  const isNear = pct >= 80 && !isAtLimit;
+  const barColor = isAtLimit ? "bg-red-500" : isNear ? "bg-amber-500" : "bg-green-500";
+
   return (
-    <div className="mt-12 rounded-lg border border-dashed border-border p-12 text-center">
-      <h2 className="text-lg font-medium">No agents yet</h2>
-      <p className="mt-2 text-muted-foreground">
-        Add your first Claude Code agent to get started.
-      </p>
-      <button
-        onClick={onAdd}
-        className="mt-6 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-      >
-        <Plus className="size-4" /> Add Agent
-      </button>
+    <div className="mt-4">
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+      {(isNear || isAtLimit) && (
+        <div className={`mt-1 flex items-center gap-1 text-xs ${isAtLimit ? "text-red-400" : "text-amber-400"}`}>
+          <AlertTriangle className="size-3" />
+          {isAtLimit ? "Budget reached" : "Approaching limit"}
+        </div>
+      )}
     </div>
   );
-}
-
-function statusColor(status: Agent["status"]) {
-  switch (status) {
-    case "running":
-      return "bg-green-500/20 text-green-400";
-    case "active":
-    case "idle":
-      return "bg-blue-500/20 text-blue-400";
-    case "paused":
-      return "bg-yellow-500/20 text-yellow-400";
-    case "error":
-      return "bg-red-500/20 text-red-400";
-    case "pending_approval":
-      return "bg-purple-500/20 text-purple-400";
-    default:
-      return "bg-muted text-muted-foreground";
-  }
 }
 
 function AgentCard({
@@ -162,22 +165,31 @@ function AgentCard({
   const cwd = agent.adapterConfig?.cwd as string | undefined;
   const isPaused = agent.status === "paused";
   const isPendingApproval = agent.status === "pending_approval";
+  const isCeo = isCeoAgent(agent);
 
   return (
     <div className="group rounded-lg border border-border bg-card shadow-sm transition-colors hover:border-primary/40">
       <Link to={`/agents/${agent.id}`} className="block p-4">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
             <div className="font-medium group-hover:text-primary">{agent.name}</div>
             {agent.title && (
               <div className="text-xs text-muted-foreground">{agent.title}</div>
             )}
+            {isCeo && (
+              <div className="mt-0.5 text-[11px] text-muted-foreground/80">
+                Receives tasks from owner
+              </div>
+            )}
           </div>
-          <span
-            className={`rounded-full px-2 py-0.5 text-xs ${statusColor(agent.status)}`}
-          >
-            {agent.status === "pending_approval" ? "pending" : agent.status}
-          </span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {isCeo && (
+              <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                CEO
+              </span>
+            )}
+            <StatusBadge status={agent.status} />
+          </div>
         </div>
         {agent.capabilities && (
           <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">
@@ -200,6 +212,7 @@ function AgentCard({
             </div>
           )}
         </dl>
+        <BudgetBar agent={agent} />
       </Link>
       <div className="flex gap-2 border-t border-border px-4 py-3">
         {isPendingApproval ? (

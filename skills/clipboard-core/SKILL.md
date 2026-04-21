@@ -1,5 +1,6 @@
 ---
-name: paperclip
+slug: clipboard-core
+name: Clipboard Core
 description: >
   Interact with the Paperclip control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check

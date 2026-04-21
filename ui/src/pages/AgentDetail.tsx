@@ -2,7 +2,10 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   ArrowLeft,
+  BookOpen,
+  Brain,
   Check,
   Loader2,
   Lock,
@@ -16,6 +19,7 @@ import {
 import { api } from "../lib/api";
 import { formatDuration, formatRelativeTime, formatTokens, formatUsd } from "../lib/format";
 import {
+  isMeteredAgent,
   runBilling,
   runDurationMs,
   runModel,
@@ -26,6 +30,7 @@ import {
   type Agent,
   type HeartbeatRun,
 } from "../lib/types";
+import { StatusBadge } from "../components/StatusBadge";
 
 export function AgentDetailPage() {
   const { id = "" } = useParams();
@@ -259,7 +264,11 @@ export function AgentDetailPage() {
 
       <AgentSkillsSection agentId={a.id} />
 
-      <HeartbeatConfig agent={a} onSaved={invalidate} />
+      <MemorySection agent={a} onSaved={invalidate} />
+
+      <BudgetSection agent={a} onSaved={invalidate} />
+
+      <WakeConditionsSection agent={a} onSaved={invalidate} />
     </div>
   );
 }
@@ -398,7 +407,7 @@ function SkillRow({
         title={
           locked
             ? entry.readOnly
-              ? "User-installed skill — managed outside Paperclip"
+              ? "User-installed skill — managed outside Clipboard"
               : (entry.requiredReason ?? "Required skill")
             : undefined
         }
@@ -416,30 +425,460 @@ function SkillRow({
   );
 }
 
-const INTERVAL_OPTIONS = [
-  { label: "Every 15 min", value: 900 },
-  { label: "Every 30 min", value: 1800 },
+// Markdown body for the auto-created "clipboard-memory" company skill. Mirrors
+// skills/clipboard-memory/SKILL.md in the repo. Inlined so the UI can seed the
+// company library without depending on a filesystem path the server can read.
+const CLIPBOARD_MEMORY_SKILL_MARKDOWN = `---
+name: clipboard-memory
+description: Session memory for agents that do not have their own memory system. Read memory.md at the start of every task, reference past work and decisions, and never repeat work already recorded. Used whenever context from earlier sessions matters.
+---
+
+# Clipboard Session Memory
+
+You have a persistent, file-based memory called \`memory.md\`. After each of your
+runs, a short summary is appended to this file automatically. Use it to remember
+what you have already done so you can build on it instead of starting fresh.
+
+## At the start of every task
+
+1. Check whether \`memory.md\` exists in your working directory.
+2. If it exists, read it before doing anything else.
+3. Treat the entries as background context — past tasks, decisions, output,
+   and anything flagged for next time.
+
+## How to use it
+
+- Do not repeat work that is already recorded as done.
+- Cite past decisions when relevant.
+- Pick up threads when the current task is open-ended.
+- Respect the archive — \`## Archive — YYYY-MM\` sections are older, compressed.
+
+## What NOT to do
+
+- Do not edit \`memory.md\` yourself; it is managed by Clipboard.
+- Do not treat memory as authoritative over the user.
+- Do not surface memory to the user unless they ask.
+`;
+
+const MEMORY_SKILL_SLUG = "clipboard-memory";
+
+function MemorySection({ agent, onSaved }: { agent: Agent; onSaved: () => void }) {
+  const qc = useQueryClient();
+  const enabled = agent.metadata?.memory_enabled === true;
+  const cwd = (agent.adapterConfig?.cwd as string | undefined) ?? null;
+  const [showViewer, setShowViewer] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const companySkills = useQuery({
+    queryKey: ["skills", agent.companyId],
+    queryFn: () => api.listCompanySkills(agent.companyId),
+  });
+
+  const agentSkills = useQuery({
+    queryKey: ["agentSkills", agent.id],
+    queryFn: () => api.listAgentSkills(agent.id),
+  });
+
+  const findMemorySkillKey = (): string | null => {
+    const fromLibrary = (companySkills.data ?? []).find(
+      (s) => s.slug === MEMORY_SKILL_SLUG || s.key === MEMORY_SKILL_SLUG,
+    );
+    if (fromLibrary) return fromLibrary.key;
+    const entry = (agentSkills.data?.entries ?? []).find(
+      (e) => e.key === MEMORY_SKILL_SLUG || e.runtimeName === MEMORY_SKILL_SLUG,
+    );
+    return entry?.key ?? null;
+  };
+
+  const toggle = useMutation({
+    mutationFn: async () => {
+      const turnOn = !enabled;
+
+      if (turnOn) {
+        // 1. Ensure the skill exists in the company library.
+        let key = findMemorySkillKey();
+        if (!key) {
+          const created = await api.createCompanySkill(agent.companyId, {
+            name: "Session memory",
+            slug: MEMORY_SKILL_SLUG,
+            description:
+              "Persistent memory stored in memory.md in the agent's working directory.",
+            markdown: CLIPBOARD_MEMORY_SKILL_MARKDOWN,
+          });
+          key = created.key;
+        }
+
+        // 2. Add the skill to this agent's desired skills.
+        const current = new Set(agentSkills.data?.desiredSkills ?? []);
+        current.add(key);
+        await api.syncAgentSkills(agent.id, Array.from(current));
+
+        // 3. Flip the flag in metadata so the post-run hook knows to record.
+        await api.updateAgent(agent.id, {
+          metadata: { ...(agent.metadata ?? {}), memory_enabled: true },
+        });
+      } else {
+        // 1. Remove the skill from desired skills (leave it in the library).
+        const key = findMemorySkillKey();
+        const remaining = (agentSkills.data?.desiredSkills ?? []).filter(
+          (k) => k !== key && k !== MEMORY_SKILL_SLUG,
+        );
+        await api.syncAgentSkills(agent.id, remaining);
+
+        // 2. Flip the flag off.
+        await api.updateAgent(agent.id, {
+          metadata: { ...(agent.metadata ?? {}), memory_enabled: false },
+        });
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agent", agent.id] });
+      qc.invalidateQueries({ queryKey: ["agentSkills", agent.id] });
+      qc.invalidateQueries({ queryKey: ["skills", agent.companyId] });
+      qc.invalidateQueries({ queryKey: ["agents"] });
+      setError(null);
+      onSaved();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
+  const clear = useMutation({
+    mutationFn: () => api.clearAgentMemory(agent.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agentMemory", agent.id] });
+      setError(null);
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
+  const canEnable = Boolean(cwd);
+
+  return (
+    <section>
+      <h2 className="mb-3 text-sm font-medium text-muted-foreground uppercase tracking-wide">
+        Memory
+      </h2>
+      <div className="space-y-4 rounded-md border border-border bg-card p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Brain className="size-4" />
+              Enable session memory
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              After every successful task, Clipboard summarizes the run and
+              appends it to <code className="font-mono">memory.md</code> in the
+              agent's working directory. The agent reads it on the next run to
+              pick up where it left off.
+            </div>
+            {!canEnable && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-400">
+                <AlertTriangle className="size-3" />
+                Set a working directory first — memory is stored in that folder.
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => toggle.mutate()}
+            disabled={toggle.isPending || !canEnable}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none disabled:opacity-40 ${
+              enabled ? "bg-primary" : "bg-muted"
+            }`}
+            title={
+              !canEnable
+                ? "Set a working directory on the agent to enable memory."
+                : undefined
+            }
+          >
+            <span
+              className={`inline-block size-5 rounded-full bg-white shadow transition-transform ${
+                enabled ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        </div>
+
+        {enabled && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+            <button
+              onClick={() => setShowViewer(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs hover:bg-accent"
+            >
+              <BookOpen className="size-3.5" /> View memory
+            </button>
+            <button
+              onClick={() => {
+                if (
+                  confirm(
+                    "Clear memory for this agent? This wipes memory.md and cannot be undone.",
+                  )
+                ) {
+                  clear.mutate();
+                }
+              }}
+              disabled={clear.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              {clear.isPending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="size-3.5" />
+              )}
+              Clear memory
+            </button>
+            {cwd && (
+              <span className="text-xs text-muted-foreground">
+                <span className="font-mono">
+                  {cwd.replace(/\/Users\/[^/]+/, "~")}/memory.md
+                </span>
+              </span>
+            )}
+          </div>
+        )}
+
+        {error && (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+      </div>
+
+      {showViewer && (
+        <MemoryViewerModal agentId={agent.id} onClose={() => setShowViewer(false)} />
+      )}
+    </section>
+  );
+}
+
+function MemoryViewerModal({
+  agentId,
+  onClose,
+}: {
+  agentId: string;
+  onClose: () => void;
+}) {
+  const memory = useQuery({
+    queryKey: ["agentMemory", agentId],
+    queryFn: () => api.getAgentMemory(agentId),
+  });
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex w-full max-w-3xl max-h-[85vh] flex-col overflow-hidden rounded-lg border border-border bg-card shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
+          <h2 className="text-base font-semibold">memory.md</h2>
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto px-5 py-4">
+          {memory.isLoading ? (
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" /> Loading…
+            </div>
+          ) : memory.error ? (
+            <div className="text-destructive">
+              {memory.error instanceof Error ? memory.error.message : String(memory.error)}
+            </div>
+          ) : !memory.data?.exists ? (
+            <div className="text-sm text-muted-foreground">
+              No memory yet. It will appear here after the agent's next
+              successful task.
+            </div>
+          ) : (
+            <pre className="whitespace-pre-wrap rounded-md border border-border bg-background p-3 font-mono text-xs">
+              {memory.data.content}
+            </pre>
+          )}
+          {memory.data?.path && (
+            <div className="mt-3 text-xs text-muted-foreground font-mono">
+              {memory.data.path}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BudgetSection({ agent, onSaved }: { agent: Agent; onSaved: () => void }) {
+  const currentBudget = agent.budgetMonthlyCents != null
+    ? String(agent.budgetMonthlyCents / 100)
+    : "";
+  const [input, setInput] = useState(currentBudget);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: () => {
+      const trimmed = input.trim();
+      const cents = trimmed === "" ? null : Math.round(parseFloat(trimmed) * 100);
+      if (cents !== null && (isNaN(cents) || cents < 0)) {
+        throw new Error("Enter a valid dollar amount, or leave blank for no limit.");
+      }
+      return api.updateAgent(agent.id, { budgetMonthlyCents: cents });
+    },
+    onSuccess: () => { setError(null); onSaved(); },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
+  const budget = agent.budgetMonthlyCents;
+  const spent = agent.spentMonthlyCents ?? 0;
+  const hasBudget = budget != null && budget > 0;
+  const metered = isMeteredAgent(agent);
+  const pct = hasBudget ? Math.min(100, Math.round((spent / budget!) * 100)) : 0;
+  const isNearLimit = hasBudget && metered && pct >= 80 && pct < 100;
+  const isAtLimit = hasBudget && metered && pct >= 100;
+  const budgetPaused = agent.status === "paused" && hasBudget && metered;
+
+  const barColor = pct >= 100
+    ? "bg-red-500"
+    : pct >= 80
+    ? "bg-amber-500"
+    : "bg-green-500";
+
+  return (
+    <section>
+      <h2 className="mb-3 text-sm font-medium text-muted-foreground uppercase tracking-wide">
+        Budget
+      </h2>
+      <div className="space-y-4 rounded-md border border-border bg-card p-4">
+        {!metered && (
+          <div className="flex items-start gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm">
+            <div className="mt-0.5 size-4 shrink-0 rounded-full bg-blue-500/20" />
+            <div className="text-muted-foreground">
+              <span className="text-foreground">Subscription — no dollar cap.</span>{" "}
+              This agent runs under your Claude plan, so its runs don't incur
+              per-dollar charges and budgets don't track usage. Budget caps
+              only enforce on agents authenticating with their own API key.
+            </div>
+          </div>
+        )}
+
+        {budgetPaused && (
+          <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <span>
+              Agent auto-paused — monthly budget reached. Resume will reset for next billing cycle.
+            </span>
+          </div>
+        )}
+
+        {hasBudget && metered && (
+          <div className="space-y-1.5">
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>{formatUsd(spent / 100)} spent</span>
+              <span className={isAtLimit ? "text-red-400" : isNearLimit ? "text-amber-400" : ""}>
+                {pct}% of {formatUsd(budget! / 100)}
+              </span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className={`h-full rounded-full transition-all ${barColor}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            {isNearLimit && (
+              <div className="flex items-center gap-1.5 text-xs text-amber-400">
+                <AlertTriangle className="size-3" /> Approaching monthly limit
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex items-end gap-3">
+          <label className="flex-1 block">
+            <div className="mb-1.5 text-sm font-medium">
+              Monthly budget
+              {!metered && (
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  (inactive while on subscription)
+                </span>
+              )}
+            </div>
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground text-sm">
+                $
+              </span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="No limit"
+                className="w-full rounded-md border border-border bg-background py-2 pl-7 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {metered
+                ? "Leave blank for no limit. Clipboard auto-pauses the agent at 100%."
+                : "Any cap you set here activates automatically if you switch this agent to API-key auth."}
+            </div>
+          </label>
+          <button
+            onClick={() => { setError(null); save.mutate(); }}
+            disabled={save.isPending}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            {save.isPending && <Loader2 className="size-4 animate-spin" />}
+            Save
+          </button>
+        </div>
+        {error && (
+          <div className="text-sm text-destructive">{error}</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const INTERVAL_OPTIONS: Array<{ label: string; value: number }> = [
+  { label: "Every 30 seconds", value: 30 },
+  { label: "Every 5 minutes", value: 300 },
+  { label: "Every 15 minutes", value: 900 },
+  { label: "Every 30 minutes", value: 1800 },
   { label: "Every 1 hour", value: 3600 },
-  { label: "Every 2 hours", value: 7200 },
-  { label: "Every 6 hours", value: 21600 },
+  { label: "Every 4 hours", value: 14400 },
   { label: "Every 12 hours", value: 43200 },
   { label: "Every 24 hours", value: 86400 },
 ];
 
-function HeartbeatConfig({ agent, onSaved }: { agent: Agent; onSaved: () => void }) {
+function WakeConditionsSection({
+  agent,
+  onSaved,
+}: {
+  agent: Agent;
+  onSaved: () => void;
+}) {
   const hb = (agent.runtimeConfig?.heartbeat ?? {}) as Record<string, unknown>;
-  const enabled = Boolean(hb.enabled);
-  const intervalSec = (hb.intervalSec as number | undefined) ?? 3600;
+  const savedEnabled = Boolean(hb.enabled);
+  const savedInterval =
+    (hb.intervalSec as number | undefined) ??
+    (hb.intervalSeconds as number | undefined) ??
+    3600;
+
+  const [enabled, setEnabled] = useState(savedEnabled);
+  const [interval, setInterval] = useState<number>(savedInterval);
 
   const save = useMutation({
-    mutationFn: (patch: { enabled: boolean; intervalSec: number }) =>
+    mutationFn: () =>
       api.updateAgent(agent.id, {
         runtimeConfig: {
           ...(agent.runtimeConfig ?? {}),
           heartbeat: {
             ...(hb ?? {}),
-            enabled: patch.enabled,
-            intervalSec: patch.intervalSec,
+            enabled,
+            intervalSec: interval,
+            intervalSeconds: interval,
             wakeOnDemand: true,
           },
         },
@@ -447,41 +886,35 @@ function HeartbeatConfig({ agent, onSaved }: { agent: Agent; onSaved: () => void
     onSuccess: onSaved,
   });
 
+  const dirty = enabled !== savedEnabled || interval !== savedInterval;
+
+  const summary = enabled
+    ? INTERVAL_OPTIONS.find((o) => o.value === interval)?.label.toLowerCase() ??
+      `every ${interval}s`
+    : "Manual + when tasks are assigned";
+
   return (
     <section>
       <h2 className="mb-3 text-sm font-medium text-muted-foreground uppercase tracking-wide">
-        Autonomous schedule
+        Wake conditions
       </h2>
-      <div className="rounded-md border border-border bg-card p-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <div className="text-sm font-medium">
-              {enabled ? "Running on schedule" : "Manual only"}
+
+      <div className="space-y-4 rounded-md border border-border bg-card p-4">
+        <div className="text-xs text-muted-foreground">
+          Current: <span className="text-foreground">{summary}</span>
+        </div>
+
+        {/* Scheduled wake */}
+        <div className="space-y-3 rounded-md border border-border bg-background p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">Wake on a schedule</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                Checks in automatically at a regular interval to look for work.
+              </div>
             </div>
-            <div className="mt-0.5 text-xs text-muted-foreground">
-              {enabled
-                ? `Wakes automatically ${INTERVAL_OPTIONS.find((o) => o.value === intervalSec)?.label.toLowerCase() ?? `every ${intervalSec}s`} to check for work and self-direct.`
-                : "Only runs when you send a task manually."}
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            {enabled && (
-              <select
-                defaultValue={intervalSec}
-                onChange={(e) =>
-                  save.mutate({ enabled: true, intervalSec: Number(e.target.value) })
-                }
-                className="rounded-md border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                {INTERVAL_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            )}
             <button
-              onClick={() => save.mutate({ enabled: !enabled, intervalSec })}
+              onClick={() => setEnabled((v) => !v)}
               disabled={save.isPending}
               className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none disabled:opacity-50 ${
                 enabled ? "bg-primary" : "bg-muted"
@@ -494,6 +927,44 @@ function HeartbeatConfig({ agent, onSaved }: { agent: Agent; onSaved: () => void
               />
             </button>
           </div>
+
+          {enabled && (
+            <label className="block">
+              <div className="mb-1 text-xs text-muted-foreground">Check in every…</div>
+              <select
+                value={interval}
+                onChange={(e) => setInterval(Number(e.target.value))}
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {INTERVAL_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+
+        {/* Always-on triggers (built into the backend — informational only) */}
+        <div className="rounded-md border border-border bg-background p-3 text-xs text-muted-foreground">
+          <div className="mb-1 font-medium text-foreground">Always on</div>
+          This agent also wakes automatically when a task is assigned to them,
+          regardless of the schedule above.
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
+          {dirty && (
+            <span className="text-xs text-muted-foreground">Unsaved changes</span>
+          )}
+          <button
+            onClick={() => save.mutate()}
+            disabled={save.isPending || !dirty}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            {save.isPending && <Loader2 className="size-4 animate-spin" />}
+            Save wake conditions
+          </button>
         </div>
       </div>
     </section>
@@ -566,15 +1037,6 @@ function TaskInput({ agent, onSent }: { agent: Agent; onSent: () => void }) {
 function RunCard({ run }: { run: HeartbeatRun }) {
   const [expanded, setExpanded] = useState(false);
 
-  const statusTone =
-    run.status === "running"
-      ? "bg-blue-500/10 text-blue-400 border-blue-500/30"
-      : run.status === "succeeded"
-      ? "bg-green-500/10 text-green-400 border-green-500/30"
-      : run.status === "failed"
-      ? "bg-red-500/10 text-red-400 border-red-500/30"
-      : "bg-muted/50 text-muted-foreground border-border";
-
   const tokens = runTokens(run);
   const billing = runBilling(run);
   const model = runModel(run);
@@ -595,9 +1057,7 @@ function RunCard({ run }: { run: HeartbeatRun }) {
         className="flex w-full flex-wrap items-center justify-between gap-2 text-left"
       >
         <div className="flex min-w-0 items-center gap-3">
-          <span className={`rounded-full border px-2 py-0.5 text-xs ${statusTone}`}>
-            {run.status}
-          </span>
+          <StatusBadge status={run.status} />
           <span className="truncate text-sm">{summary}</span>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -773,18 +1233,3 @@ function EditAgentForm({
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const tone =
-    status === "running"
-      ? "bg-green-500/20 text-green-400"
-      : status === "active" || status === "idle"
-      ? "bg-blue-500/20 text-blue-400"
-      : status === "paused"
-      ? "bg-yellow-500/20 text-yellow-400"
-      : status === "error"
-      ? "bg-red-500/20 text-red-400"
-      : "bg-muted text-muted-foreground";
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-xs ${tone}`}>{status}</span>
-  );
-}
