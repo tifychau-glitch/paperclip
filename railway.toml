@@ -1,0 +1,22 @@
+# Railway deployment config for Clipboard.
+# See DEPLOY.md for the full environment-variable checklist.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Migrations are applied in-process by the server on boot (see
+# ensureMigrations in server/src/index.ts), so we just invoke the
+# same CMD the Dockerfile declares. The docker-entrypoint.sh ENTRYPOINT
+# still runs (gosu → node user) because startCommand only overrides CMD.
+startCommand = "node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[environments.production.variables]
+NODE_ENV = "production"
+PAPERCLIP_DEPLOYMENT_MODE = "authenticated"
+PAPERCLIP_DEPLOYMENT_EXPOSURE = "lan"
