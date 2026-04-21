@@ -160,10 +160,13 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
-  const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
-    deploymentMode: opts.deploymentMode,
-    deploymentExposure: opts.deploymentExposure,
-  });
+  const privateHostnameGateEnabled =
+    process.env.DISABLE_HOSTNAME_GUARD === "true"
+      ? false
+      : shouldEnablePrivateHostnameGuard({
+          deploymentMode: opts.deploymentMode,
+          deploymentExposure: opts.deploymentExposure,
+        });
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
     allowedHostnames: opts.allowedHostnames,
     bindHost: opts.bindHost,
