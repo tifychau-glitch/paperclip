@@ -8,7 +8,10 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
-import { inviteOnlyMiddleware } from "./middleware/invite-only.js";
+// NOTE: invite-only middleware is intentionally not mounted right now —
+// keeping the file at ./middleware/invite-only.js for when beta gating
+// is re-enabled. Remove this comment and restore the import+use site
+// below to turn it back on.
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -171,9 +174,6 @@ export async function createApp(
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
-  // Invite-only gate for beta deployments. No-op if INVITE_ALLOWLIST is unset.
-  // Mounted on /api (not the whole app) so /api/auth/* stays reachable for sign-in.
-  api.use(inviteOnlyMiddleware());
   api.use(
     "/health",
     healthRoutes(db, {
