@@ -19,4 +19,4 @@ restartPolicyMaxRetries = 3
 [environments.production.variables]
 NODE_ENV = "production"
 PAPERCLIP_DEPLOYMENT_MODE = "authenticated"
-PAPERCLIP_DEPLOYMENT_EXPOSURE = "lan"
+PAPERCLIP_DEPLOYMENT_EXPOSURE = "public"
