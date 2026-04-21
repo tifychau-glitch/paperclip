@@ -160,13 +160,11 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
-  const privateHostnameGateEnabled =
-    process.env.DISABLE_HOSTNAME_GUARD === "true"
-      ? false
-      : shouldEnablePrivateHostnameGuard({
-          deploymentMode: opts.deploymentMode,
-          deploymentExposure: opts.deploymentExposure,
-        });
+  // Hostname guard is hard-disabled for hosted deploys. The platform's
+  // edge (Railway, etc.) already terminates TLS on a fixed hostname, so
+  // the in-process allowlist just double-blocks legitimate traffic.
+  // shouldEnablePrivateHostnameGuard is still exported for tests.
+  const privateHostnameGateEnabled = false;
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
     allowedHostnames: opts.allowedHostnames,
     bindHost: opts.bindHost,
