@@ -84,6 +84,22 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
   return Array.from(trustedOrigins);
 }
 
+/**
+ * Parse INVITE_ALLOWLIST (comma-separated emails). Returns null when the
+ * allowlist is disabled, or a lowercased Set of emails when enabled.
+ * Kept in sync with ../middleware/invite-only.ts — both paths check the
+ * same env var so the gate is consistent at sign-up and at API-call time.
+ */
+function parseInviteAllowlist(): Set<string> | null {
+  const raw = process.env.INVITE_ALLOWLIST;
+  if (!raw) return null;
+  const emails = raw
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e.length > 0);
+  return emails.length > 0 ? new Set(emails) : null;
+}
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
@@ -113,6 +129,31 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
         }
       : undefined;
 
+  // Sign-up gate: when INVITE_ALLOWLIST is set, reject any new account
+  // whose email isn't on the list — including Google OAuth sign-ups. The
+  // `databaseHooks.user.create.before` callback fires once, right before
+  // Better Auth writes the user row, regardless of which provider was
+  // used to authenticate. Throwing here prevents the account from being
+  // created at all (vs. the request-time middleware, which can only
+  // block API usage after an off-list account already exists).
+  const inviteAllowlist = parseInviteAllowlist();
+  const databaseHooks = inviteAllowlist
+    ? {
+        user: {
+          create: {
+            before: async (user: { email?: string | null }) => {
+              const email = user.email?.trim().toLowerCase();
+              if (!email || !inviteAllowlist.has(email)) {
+                throw new Error(
+                  "This email is not on the Clipboard invite allowlist.",
+                );
+              }
+            },
+          },
+        },
+      }
+    : undefined;
+
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -132,6 +173,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       disableSignUp: config.authDisableSignUp,
     },
     ...(socialProviders ? { socialProviders } : {}),
+    ...(databaseHooks ? { databaseHooks } : {}),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: isHttpOnly }),
   };
 

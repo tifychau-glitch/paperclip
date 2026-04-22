@@ -8,10 +8,7 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
-// NOTE: invite-only middleware is intentionally not mounted right now —
-// keeping the file at ./middleware/invite-only.js for when beta gating
-// is re-enabled. Remove this comment and restore the import+use site
-// below to turn it back on.
+import { inviteOnlyMiddleware } from "./middleware/invite-only.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -38,6 +35,7 @@ import {
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { bootstrapRoutes } from "./routes/bootstrap.js";
+import { daemonRoutes } from "./routes/daemon.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
@@ -183,6 +181,11 @@ export async function createApp(
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+  // Invite-only gate for beta deployments. No-op when INVITE_ALLOWLIST is
+  // unset. Mounted on /api only so /api/auth/* still reaches Better Auth
+  // for sign-in/sign-up; the Better Auth database hook below rejects
+  // off-list sign-ups before a row is ever created.
+  api.use(inviteOnlyMiddleware());
   api.use(
     "/health",
     healthRoutes(db, {
@@ -193,6 +196,7 @@ export async function createApp(
     }),
   );
   api.use("/bootstrap", bootstrapRoutes(db));
+  api.use("/daemon", daemonRoutes(db));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db));

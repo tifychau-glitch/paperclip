@@ -1,11 +1,5 @@
 # Deploying Clipboard to Railway
 
-## One-click deploy
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/[TEMPLATE_ID])
-
-*(Template ID to be filled in after first manual deploy.)*
-
 ## Manual deploy
 
 1. Fork this repo to your GitHub account.
@@ -43,13 +37,21 @@ email/password auth is available.
 
 | Variable | Purpose |
 |---|---|
-| `INVITE_ALLOWLIST` | Comma-separated list of email addresses allowed to sign in. Leave blank to allow anyone (not recommended for beta). Example: `alice@gmail.com,bob@gmail.com,charlie@gmail.com` |
+| `INVITE_ALLOWLIST` | Comma-separated list of email addresses allowed to use the app. Leave blank to allow anyone. Example: `alice@gmail.com,bob@gmail.com,charlie@gmail.com` |
 | `CLIPBOARD_CONTACT_EMAIL` | Shown on the "invite only" page so rejected users know who to contact. |
 
-When `INVITE_ALLOWLIST` is unset the gate is disabled — useful for your own
-development/testing. When set, any authenticated user whose email is not in
-the list gets a 403 page with a contact prompt. Agent JWTs and board API
-keys are not affected (they're already provisioned, not interactive).
+When set, the allowlist is enforced in two places:
+
+- **At sign-up**: Better Auth's `databaseHooks.user.create.before` hook
+  rejects any new account — email/password or Google OAuth — whose email
+  isn't on the list. No off-list account is ever created in the database.
+- **At API-call time**: Any existing session whose email is off-list gets
+  a 403 HTML page with the contact prompt. Agent JWTs and board API keys
+  are not affected (they're already provisioned, not interactive).
+
+The double gate means you can tighten the allowlist later and existing
+off-list accounts stop working immediately, even if their cookies are
+still valid.
 
 ### Other optional
 
@@ -58,6 +60,16 @@ keys are not affected (they're already provisioned, not interactive).
 | `VITE_CLIPBOARD_ROOT` | Override the default `delegate.py` path. Leave blank for cloud deployments. |
 | `PAPERCLIP_TELEMETRY_DISABLED` | Set to `1` to disable anonymous telemetry. |
 | `PAPERCLIP_PUBLIC_URL` | Full base URL (e.g. `https://clipboard-abc.railway.app`). Usually only needed if Better Auth's callback URLs need to be forced to a specific host. |
+| `PAPERCLIP_DISABLE_BOOTSTRAP_CLAIM` | Set to `true` after first admin is established if you want to hard-disable the `POST /api/bootstrap/claim-instance-admin` endpoint. Normal operation doesn't need this. |
+
+### Deprecated / safe to delete
+
+If you see these in your Railway Variables tab from earlier iterations,
+they are no longer read by the server and can be removed:
+
+- `DISABLE_HOSTNAME_GUARD` — the hostname guard is hard-disabled in code.
+- `PAPERCLIP_ALLOWED_HOSTNAMES` — only consumed when the hostname guard is
+  active, which it isn't.
 
 ## Database
 
