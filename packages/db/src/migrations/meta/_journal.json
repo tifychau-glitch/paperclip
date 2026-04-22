@@ -421,6 +421,13 @@
       "when": 1776861166761,
       "tag": "0059_slim_iron_monger",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1776861669480,
+      "tag": "0060_perpetual_wraith",
+      "breakpoints": true
     }
   ]
 }
