@@ -13,11 +13,13 @@ import { useState, type FormEvent } from "react";
 import { Clipboard, Loader2 } from "lucide-react";
 import {
   startSocialSignIn,
+  useAuthCapabilities,
+  useForgotPassword,
   useSignIn,
   useSignUp,
 } from "../lib/auth";
 
-type Mode = "signin" | "signup";
+type Mode = "signin" | "signup" | "forgot";
 
 export function LoginPage() {
   const [mode, setMode] = useState<Mode>("signin");
@@ -29,20 +31,30 @@ export function LoginPage() {
 
   const signIn = useSignIn();
   const signUp = useSignUp();
+  const forgot = useForgotPassword();
+  const capabilities = useAuthCapabilities();
 
-  const busy = signIn.isPending || signUp.isPending || socialLoading;
+  const busy =
+    signIn.isPending ||
+    signUp.isPending ||
+    forgot.isPending ||
+    socialLoading;
   const error =
     socialError ??
     (signIn.error instanceof Error ? signIn.error.message : null) ??
-    (signUp.error instanceof Error ? signUp.error.message : null);
+    (signUp.error instanceof Error ? signUp.error.message : null) ??
+    (forgot.error instanceof Error ? forgot.error.message : null);
+  const forgotSent = forgot.isSuccess;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setSocialError(null);
     if (mode === "signin") {
       signIn.mutate({ email, password });
-    } else {
+    } else if (mode === "signup") {
       signUp.mutate({ email, password, name: name.trim() || email });
+    } else {
+      forgot.mutate({ email });
     }
   }
 
@@ -75,121 +87,163 @@ export function LoginPage() {
 
         <div className="rounded-lg border border-border bg-card p-6 shadow-sm">
           <h1 className="text-lg font-semibold mb-1">
-            {mode === "signin" ? "Sign in" : "Create your account"}
+            {mode === "signin"
+              ? "Sign in"
+              : mode === "signup"
+                ? "Create your account"
+                : "Reset your password"}
           </h1>
           <p className="text-sm text-muted-foreground mb-4">
             {mode === "signin"
               ? "Welcome back."
-              : "The first person to sign up becomes the instance admin."}
+              : mode === "signup"
+                ? "The first person to sign up becomes the instance admin."
+                : "Enter your email and we'll send you a reset link."}
           </p>
 
-          <button
-            type="button"
-            onClick={handleGoogle}
-            disabled={busy}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-accent/40 disabled:opacity-50"
-          >
-            {socialLoading ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <GoogleGlyph className="size-4" />
-            )}
-            Continue with Google
-          </button>
+          {mode !== "forgot" && capabilities.data?.googleOAuth !== false && (
+            <>
+              <button
+                type="button"
+                onClick={handleGoogle}
+                disabled={busy}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-accent/40 disabled:opacity-50"
+              >
+                {socialLoading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <GoogleGlyph className="size-4" />
+                )}
+                Continue with Google
+              </button>
 
-          <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
-            <div className="h-px flex-1 bg-border" />
-            <span>or</span>
-            <div className="h-px flex-1 bg-border" />
-          </div>
+              <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
+                <div className="h-px flex-1 bg-border" />
+                <span>or</span>
+                <div className="h-px flex-1 bg-border" />
+              </div>
+            </>
+          )}
 
-          <form onSubmit={handleSubmit} className="space-y-3">
-            {mode === "signup" && (
+          {mode === "forgot" && forgotSent ? (
+            <div className="rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+              If an account exists for <strong className="text-foreground">{email}</strong>,
+              a reset link is on its way. Check your inbox (and spam folder).
+              The link expires in one hour.
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-3">
+              {mode === "signup" && (
+                <label className="block">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Name
+                  </span>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    disabled={busy}
+                    autoComplete="name"
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </label>
+              )}
               <label className="block">
                 <span className="text-xs font-medium text-muted-foreground">
-                  Name
+                  Email
                 </span>
                 <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   disabled={busy}
-                  autoComplete="name"
+                  autoComplete="email"
                   className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
               </label>
-            )}
-            <label className="block">
-              <span className="text-xs font-medium text-muted-foreground">
-                Email
-              </span>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={busy}
-                autoComplete="email"
-                className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs font-medium text-muted-foreground">
-                Password
-              </span>
-              <input
-                type="password"
-                required
-                minLength={8}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={busy}
-                autoComplete={
-                  mode === "signin" ? "current-password" : "new-password"
-                }
-                className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-              {mode === "signup" && (
-                <span className="mt-1 block text-xs text-muted-foreground">
-                  Minimum 8 characters.
-                </span>
+              {mode !== "forgot" && (
+                <label className="block">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Password
+                  </span>
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    disabled={busy}
+                    autoComplete={
+                      mode === "signin" ? "current-password" : "new-password"
+                    }
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  {mode === "signup" && (
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      Minimum 8 characters.
+                    </span>
+                  )}
+                </label>
               )}
-            </label>
 
-            {error && (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
-              </div>
-            )}
+              {error && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {error}
+                </div>
+              )}
 
-            <button
-              type="submit"
-              disabled={busy}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              {busy && <Loader2 className="size-4 animate-spin" />}
-              {mode === "signin" ? "Sign in" : "Create account"}
-            </button>
-          </form>
+              <button
+                type="submit"
+                disabled={busy}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {busy && <Loader2 className="size-4 animate-spin" />}
+                {mode === "signin"
+                  ? "Sign in"
+                  : mode === "signup"
+                    ? "Create account"
+                    : "Send reset link"}
+              </button>
+            </form>
+          )}
 
-          <div className="mt-4 text-center text-sm text-muted-foreground">
-            {mode === "signin" ? (
+          <div className="mt-4 text-center text-sm text-muted-foreground space-y-1">
+            {mode === "signin" && (
               <>
-                New here?{" "}
-                <button
-                  type="button"
-                  onClick={() => {
-                    signIn.reset();
-                    setSocialError(null);
-                    setMode("signup");
-                  }}
-                  className="text-primary hover:underline"
-                >
-                  Create an account
-                </button>
+                <div>
+                  New here?{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      signIn.reset();
+                      setSocialError(null);
+                      setMode("signup");
+                    }}
+                    className="text-primary hover:underline"
+                  >
+                    Create an account
+                  </button>
+                </div>
+                {capabilities.data?.passwordReset && (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        signIn.reset();
+                        setSocialError(null);
+                        setMode("forgot");
+                      }}
+                      className="text-primary hover:underline"
+                    >
+                      Forgot your password?
+                    </button>
+                  </div>
+                )}
               </>
-            ) : (
-              <>
+            )}
+            {mode === "signup" && (
+              <div>
                 Already have an account?{" "}
                 <button
                   type="button"
@@ -202,7 +256,22 @@ export function LoginPage() {
                 >
                   Sign in
                 </button>
-              </>
+              </div>
+            )}
+            {mode === "forgot" && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    forgot.reset();
+                    setSocialError(null);
+                    setMode("signin");
+                  }}
+                  className="text-primary hover:underline"
+                >
+                  Back to sign in
+                </button>
+              </div>
             )}
           </div>
         </div>

@@ -156,3 +156,52 @@ export async function startSocialSignIn(
   }
   throw new Error("Social sign-in did not return a redirect URL");
 }
+
+export interface AuthCapabilities {
+  passwordReset: boolean;
+  googleOAuth: boolean;
+}
+
+export function useAuthCapabilities() {
+  return useQuery({
+    queryKey: ["auth", "capabilities"],
+    queryFn: async (): Promise<AuthCapabilities> => {
+      const res = await fetch("/api/auth/capabilities");
+      if (!res.ok) return { passwordReset: false, googleOAuth: false };
+      return (await res.json()) as AuthCapabilities;
+    },
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+export function useForgotPassword() {
+  return useMutation({
+    mutationFn: (vars: { email: string; redirectTo?: string }) =>
+      authFetch<unknown>("/forget-password", {
+        method: "POST",
+        body: JSON.stringify({
+          email: vars.email,
+          redirectTo:
+            vars.redirectTo ?? `${window.location.origin}/reset-password`,
+        }),
+      }),
+  });
+}
+
+export function useResetPassword() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { token: string; newPassword: string }) =>
+      authFetch<unknown>("/reset-password", {
+        method: "POST",
+        body: JSON.stringify({
+          newPassword: vars.newPassword,
+          token: vars.token,
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["auth", "session"] });
+    },
+  });
+}

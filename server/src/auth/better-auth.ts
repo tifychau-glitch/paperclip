@@ -12,6 +12,13 @@ import {
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
+import {
+  EmailNotConfiguredError,
+  isEmailConfigured,
+  renderResetPasswordHtml,
+  sendEmail,
+} from "./email.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -129,6 +136,40 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
         }
       : undefined;
 
+  // OAuth redirect URI sanity check. If Google sign-in is enabled, log
+  // the exact callback URL that Better Auth will advertise so operators
+  // can verify it matches the "Authorized redirect URI" in their Google
+  // Cloud Console credential. Mismatches are the #1 cause of silent
+  // Google sign-in failures (spinner → error page with redirect_uri_mismatch).
+  if (socialProviders?.google) {
+    if (!publicUrl) {
+      logger.warn(
+        "Google OAuth is configured but neither BETTER_AUTH_URL nor " +
+          "PAPERCLIP_PUBLIC_URL is set. Better Auth will guess the callback " +
+          "URL per-request from the Host header, which fails if Google's " +
+          'configured "Authorized redirect URI" is static. Set ' +
+          "BETTER_AUTH_URL to your public origin.",
+      );
+    } else {
+      try {
+        const origin = new URL(publicUrl).origin;
+        const expectedCallback = `${origin}/api/auth/callback/google`;
+        logger.info(
+          { expectedCallback },
+          "Google OAuth enabled — ensure this exact URL is registered " +
+            'under "Authorized redirect URIs" in your Google Cloud ' +
+            "Console OAuth client credential.",
+        );
+      } catch {
+        logger.warn(
+          { publicUrl },
+          "Google OAuth is configured but BETTER_AUTH_URL / PAPERCLIP_PUBLIC_URL " +
+            "could not be parsed as a URL. Redirect callback may be wrong.",
+        );
+      }
+    }
+  }
+
   // Sign-up gate: when INVITE_ALLOWLIST is set, reject any new account
   // whose email isn't on the list — including Google OAuth sign-ups. The
   // `databaseHooks.user.create.before` callback fires once, right before
@@ -171,6 +212,43 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       enabled: true,
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
+      // Password reset via email. Better Auth generates a short-lived
+      // token and hands us a complete reset URL; we just deliver it.
+      // If Resend isn't configured, we log the URL server-side (for
+      // small self-hosted setups where the operator can fish it out
+      // of logs) and throw so the caller sees a clear error state
+      // instead of a silent success.
+      sendResetPassword: async (data: {
+        user: { email: string; name?: string | null };
+        url: string;
+      }) => {
+        try {
+          await sendEmail({
+            to: data.user.email,
+            subject: "Reset your Clipboard password",
+            html: renderResetPasswordHtml({
+              userName: data.user.name ?? null,
+              resetUrl: data.url,
+            }),
+            text: `Reset your Clipboard password: ${data.url}`,
+          });
+        } catch (err) {
+          if (err instanceof EmailNotConfiguredError) {
+            logger.warn(
+              { to: data.user.email, resetUrl: data.url },
+              "Password reset requested but email sending is not configured — " +
+                "URL logged here; set RESEND_API_KEY and EMAIL_FROM to send " +
+                "real emails. See DEPLOY.md.",
+            );
+          } else {
+            logger.error(
+              { err, to: data.user.email },
+              "Failed to send password reset email",
+            );
+          }
+          throw err;
+        }
+      },
     },
     ...(socialProviders ? { socialProviders } : {}),
     ...(databaseHooks ? { databaseHooks } : {}),

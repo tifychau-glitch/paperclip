@@ -9,6 +9,7 @@ import {
 } from "@paperclipai/shared";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
+import { isEmailConfigured } from "../auth/email.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -36,6 +37,19 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
 
 export function authRoutes(db: Db) {
   const router = Router();
+
+  // Unauthenticated capability probe — tells the sign-in page which
+  // optional features it can advertise (Forgot-password, Google, etc.)
+  // without leaking user info. Safe to call before a session exists.
+  router.get("/capabilities", (_req, res) => {
+    res.json({
+      passwordReset: isEmailConfigured(),
+      googleOAuth: Boolean(
+        process.env.GOOGLE_CLIENT_ID?.trim() &&
+          process.env.GOOGLE_CLIENT_SECRET?.trim(),
+      ),
+    });
+  });
 
   router.get("/get-session", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {

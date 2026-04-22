@@ -18,6 +18,7 @@ import { SpendingPage } from "./pages/Spending";
 import { TasksPage } from "./pages/Tasks";
 import { OrgChartPage } from "./pages/OrgChart";
 import { LoginPage } from "./pages/Login";
+import { ResetPasswordPage } from "./pages/ResetPassword";
 import { CompanySwitcher } from "./components/CompanySwitcher";
 import { useSession, useSignOut } from "./lib/auth";
 
@@ -32,6 +33,14 @@ const TABS = [
 ];
 
 export function App() {
+  // Pre-session routes: the reset-password flow lands here via a link
+  // from the email, when the user is by definition not signed in yet.
+  // Route-match on the pathname BEFORE the session check so the token
+  // in the URL isn't lost to the Login screen's redirect.
+  if (typeof window !== "undefined" && window.location.pathname === "/reset-password") {
+    return <ResetPasswordPage />;
+  }
+
   // Auth gate: render Login until Better Auth confirms a session.
   // During the initial fetch we show a neutral "Loading" screen instead
   // of the tabbed layout — that avoids the dashboard flashing and then

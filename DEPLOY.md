@@ -33,6 +33,29 @@ email/password auth is available.
 | `GOOGLE_CLIENT_ID` | Google Cloud Console → APIs & Services → Credentials → **Create OAuth 2.0 Client ID**. Authorized redirect URI: `https://your-app.railway.app/api/auth/callback/google` |
 | `GOOGLE_CLIENT_SECRET` | Same credential in Google Cloud Console. |
 
+**Verifying the redirect URI**: on every boot, the server logs an
+`expectedCallback` line when Google OAuth is enabled. Grep your
+Railway logs for it — the URL it prints is the exact string that
+must appear in **Google Cloud Console → Credentials → your OAuth
+client → Authorized redirect URIs**. If the Railway subdomain ever
+changes (rename, new environment, etc.), update both `BETTER_AUTH_URL`
+and the Google credential entry; otherwise sign-in fails with
+`redirect_uri_mismatch`.
+
+### Password reset emails (optional)
+
+Without these variables set, the sign-in page hides the "Forgot
+password?" link and the server logs reset URLs instead of
+sending them. Wire up Resend to enable real emails:
+
+| Variable | Purpose |
+|---|---|
+| `RESEND_API_KEY` | Get from [resend.com](https://resend.com) → API Keys. Free tier covers small deploys. |
+| `EMAIL_FROM` | The `From:` header on reset emails. Must be a verified sender on your Resend account — e.g. `Clipboard <noreply@yourdomain.com>`. For first-run testing, Resend allows `onboarding@resend.dev`; real deploys need a verified domain. |
+
+The reset link is a Better Auth-signed token URL that lands on
+`<your-app>/reset-password?token=...`. Expires after one hour.
+
 ### Invite allowlist (optional, recommended for beta)
 
 | Variable | Purpose |
