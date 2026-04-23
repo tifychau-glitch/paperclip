@@ -271,6 +271,8 @@ export function AgentDetailPage() {
       <BudgetSection agent={a} onSaved={invalidate} />
 
       <WakeConditionsSection agent={a} onSaved={invalidate} />
+
+      <PermissionsSection agent={a} onSaved={invalidate} />
     </div>
   );
 }
@@ -1058,6 +1060,198 @@ function WakeConditionsSection({
             Save wake conditions
           </button>
         </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Permissions ─────────────────────────────────────────────────────────
+//
+// Two operator-facing toggles:
+//
+//   Can hire other agents (canCreateAgents)
+//     Persisted in agents.permissions.canCreateAgents via the dedicated
+//     PATCH /agents/:id/permissions endpoint. Lets this agent draft new
+//     agent configs and submit hire requests; new hires still land in
+//     pending_approval until the operator approves.
+//
+//   Require approval before sending external messages (metadata flag)
+//     v0 is a *prompt-level* gate: when on, we (a) set
+//     metadata.requireApprovalForExternalMessages = true and (b) inject
+//     a marked instruction block into the agent's promptTemplate telling
+//     it to draft + ask for approval before any outbound send. Block is
+//     idempotent — toggling off strips it. Real action-level interception
+//     is v1 (an approvals queue + Telegram approve/reject UX).
+const APPROVAL_GATE_OPEN = "<!-- CLIPBOARD_APPROVAL_GATE -->";
+const APPROVAL_GATE_CLOSE = "<!-- /CLIPBOARD_APPROVAL_GATE -->";
+const APPROVAL_GATE_TEXT = `${APPROVAL_GATE_OPEN}
+APPROVAL GATE — IMPORTANT
+You must NOT send any external message (Telegram, email, Slack, webhook, social
+post, SMS, or any outbound channel) without explicit human approval.
+Before any external send, reply to the user with:
+  DRAFT: <the message you intend to send>
+  CHANNEL: <where it would go>
+Then wait for the user to reply with "approve" (or to edit/cancel) before
+actually sending. If they don't approve, do not send.
+${APPROVAL_GATE_CLOSE}`;
+
+function ensureApprovalGateInPrompt(promptTemplate: string): string {
+  if (promptTemplate.includes(APPROVAL_GATE_OPEN)) return promptTemplate;
+  return `${promptTemplate.trimEnd()}\n\n${APPROVAL_GATE_TEXT}\n`;
+}
+
+function stripApprovalGateFromPrompt(promptTemplate: string): string {
+  // Remove the marked block plus any surrounding blank lines so toggling
+  // on/off repeatedly doesn't leave drift.
+  const re = new RegExp(
+    `\\n*${APPROVAL_GATE_OPEN}[\\s\\S]*?${APPROVAL_GATE_CLOSE}\\n*`,
+    "g",
+  );
+  return promptTemplate.replace(re, "\n").trimEnd() + "\n";
+}
+
+function PermissionsSection({
+  agent,
+  onSaved,
+}: {
+  agent: Agent;
+  onSaved: () => void;
+}) {
+  const adapterCfg = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+  const promptTemplate =
+    typeof adapterCfg.promptTemplate === "string" ? adapterCfg.promptTemplate : "";
+  const md = (agent.metadata ?? {}) as Record<string, unknown>;
+
+  const savedCanHire = Boolean(agent.permissions?.canCreateAgents);
+  const savedApprovalGate = Boolean(md.requireApprovalForExternalMessages);
+
+  const [canHire, setCanHire] = useState(savedCanHire);
+  const [approvalGate, setApprovalGate] = useState(savedApprovalGate);
+  const [error, setError] = useState<string | null>(null);
+
+  const saveHire = useMutation({
+    mutationFn: (next: boolean) =>
+      api.updateAgentPermissions(agent.id, { canCreateAgents: next }),
+    onSuccess: () => {
+      setError(null);
+      onSaved();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
+  const saveApprovalGate = useMutation({
+    mutationFn: (next: boolean) => {
+      const nextPrompt = next
+        ? ensureApprovalGateInPrompt(promptTemplate)
+        : stripApprovalGateFromPrompt(promptTemplate);
+      const promptChanged = nextPrompt !== promptTemplate;
+      return api.updateAgent(agent.id, {
+        metadata: {
+          ...md,
+          requireApprovalForExternalMessages: next,
+        },
+        ...(promptChanged
+          ? {
+              adapterConfig: {
+                ...adapterCfg,
+                promptTemplate: nextPrompt,
+              },
+            }
+          : {}),
+      });
+    },
+    onSuccess: () => {
+      setError(null);
+      onSaved();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
+  const onToggleHire = () => {
+    const next = !canHire;
+    setCanHire(next);
+    saveHire.mutate(next);
+  };
+
+  const onToggleApprovalGate = () => {
+    const next = !approvalGate;
+    setApprovalGate(next);
+    saveApprovalGate.mutate(next);
+  };
+
+  const pending = saveHire.isPending || saveApprovalGate.isPending;
+
+  return (
+    <section>
+      <h2 className="mb-3 text-sm font-medium text-muted-foreground uppercase tracking-wide">
+        Permissions
+      </h2>
+
+      <div className="space-y-3 rounded-md border border-border bg-card p-4">
+        {/* Can hire agents */}
+        <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-background p-3">
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium">Can hire new agents</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              When on, this agent can draft new agent configs and submit hire
+              requests. New hires land in <span className="font-mono">pending_approval</span>{" "}
+              and wait for you to approve them.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onToggleHire}
+            disabled={pending}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none disabled:opacity-50 ${
+              canHire ? "bg-primary" : "bg-muted"
+            }`}
+            aria-pressed={canHire}
+          >
+            <span
+              className={`inline-block size-5 rounded-full bg-white shadow transition-transform ${
+                canHire ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* Approval gate before external sends */}
+        <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-background p-3">
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium">
+              Require my approval before sending external messages
+            </div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              When on, the agent must show you a draft and wait for explicit
+              approval before any outbound send (Telegram, email, Slack,
+              webhook, posts). Today this is enforced at the prompt level —
+              best for agents that follow instructions carefully. Action-level
+              blocking comes later when the org chart adds human-in-the-loop
+              roles.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onToggleApprovalGate}
+            disabled={pending}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none disabled:opacity-50 ${
+              approvalGate ? "bg-primary" : "bg-muted"
+            }`}
+            aria-pressed={approvalGate}
+          >
+            <span
+              className={`inline-block size-5 rounded-full bg-white shadow transition-transform ${
+                approvalGate ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        </div>
+
+        {error && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+            {error}
+          </div>
+        )}
       </div>
     </section>
   );

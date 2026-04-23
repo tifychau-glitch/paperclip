@@ -87,6 +87,14 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ status: "paused", pauseReason: reason ?? null }),
     }),
+  updateAgentPermissions: (
+    agentId: string,
+    body: { canCreateAgents?: boolean },
+  ) =>
+    request<Agent>(`/agents/${agentId}/permissions`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   resumeAgent: (agentId: string) =>
     request<Agent>(`/agents/${agentId}`, {
       method: "PATCH",
