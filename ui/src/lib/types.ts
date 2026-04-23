@@ -56,6 +56,7 @@ export type Agent = {
   pauseReason: string | null;
   pausedAt: string | null;
   lastHeartbeatAt: string | null;
+  daemonDeviceKey: string | null;
   createdAt: string;
   updatedAt: string;
   urlKey: string;
@@ -327,3 +328,46 @@ export type ActivityRow = {
   details: Record<string, unknown> | null;
   createdAt: string;
 };
+
+// Secrets — API keys and other credentials stored per-company.
+// The actual secret value is write-only; rotation creates a new version.
+export type SecretProvider =
+  | "local_encrypted"
+  | "aws_secrets_manager"
+  | "gcp_secret_manager"
+  | "vault";
+
+export type CompanySecret = {
+  id: string;
+  companyId: string;
+  name: string;
+  provider: SecretProvider;
+  externalRef: string | null;
+  latestVersion: number;
+  description: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SecretProviderDescriptor = {
+  id: SecretProvider;
+  label: string;
+  requiresExternalRef: boolean;
+};
+
+// Telegram integration — per-company. Bot token never round-trips back
+// to the UI; the server only echoes a `botTokenSet` boolean.
+export type TelegramConfig = {
+  enabled: boolean;
+  botTokenSet: boolean;
+  defaultAgentId: string | null;
+  allowedUserIds: string[];
+  lastPolledAt: string | null;
+  lastError: string | null;
+};
+
+export type TelegramTestResult =
+  | { ok: true; botUsername: string | null; botName: string | null; botId: number | null }
+  | { ok: false; error: string };

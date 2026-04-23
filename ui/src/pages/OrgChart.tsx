@@ -148,7 +148,7 @@ export function OrgChartPage() {
             </div>
           )}
 
-          <div className="flex items-start justify-center gap-12">
+          <div className="flex flex-wrap items-start justify-center gap-x-12 gap-y-16">
             {forest.map((root) => (
               <TreeNodeView
                 key={root.agent.id}

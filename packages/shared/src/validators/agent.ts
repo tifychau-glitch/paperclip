@@ -58,6 +58,12 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),
+  daemonDeviceKey: z
+    .string()
+    .trim()
+    .regex(/^[a-zA-Z0-9_-]{16,128}$/)
+    .nullable()
+    .optional(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;

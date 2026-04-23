@@ -428,6 +428,34 @@
       "when": 1776861669480,
       "tag": "0060_perpetual_wraith",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1777248000000,
+      "tag": "0061_daemon_bound_agents",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1777251000000,
+      "tag": "0062_daemon_task_cancel",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1777680000000,
+      "tag": "0063_telegram_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1777690000000,
+      "tag": "0064_telegram_webhook_secret",
+      "breakpoints": true
     }
   ]
 }

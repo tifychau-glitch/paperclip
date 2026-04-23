@@ -266,10 +266,102 @@ export function AgentDetailPage() {
 
       <MemorySection agent={a} onSaved={invalidate} />
 
+      <DaemonBindingSection agent={a} onSaved={invalidate} />
+
       <BudgetSection agent={a} onSaved={invalidate} />
 
       <WakeConditionsSection agent={a} onSaved={invalidate} />
     </div>
+  );
+}
+
+// Dropdown to bind this agent to a registered Clipboard daemon. When
+// set, the heartbeat scheduler enqueues runs into daemon_tasks instead
+// of spawning locally (see server/src/services/heartbeat.ts
+// executeViaDaemon). Unset means "run locally" — the default.
+//
+// Devices that don't advertise this agent's adapterType are greyed out
+// so the operator doesn't silently bind an agent to a machine that
+// can't execute it.
+function DaemonBindingSection({ agent, onSaved }: { agent: Agent; onSaved: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const devices = useQuery({
+    queryKey: ["daemonDevices"],
+    queryFn: () => api.listDaemonDevices(),
+    staleTime: 15_000,
+  });
+  const save = useMutation({
+    mutationFn: (nextKey: string | null) =>
+      api.updateAgent(agent.id, { daemonDeviceKey: nextKey }),
+    onSuccess: () => { setError(null); onSaved(); },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
+  const deviceList = devices.data?.devices ?? [];
+  const currentKey = agent.daemonDeviceKey ?? "";
+  const hasDevices = deviceList.length > 0;
+
+  return (
+    <section>
+      <h2 className="mb-3 text-sm font-medium text-muted-foreground uppercase tracking-wide">
+        Execution location
+      </h2>
+      <div className="space-y-3 rounded-md border border-border bg-card p-4 text-sm">
+        <div className="text-muted-foreground">
+          Where should this agent's runs execute? Default is on this server.
+          Bind to a daemon to run the agent on a different machine — the
+          daemon polls for work and streams output back.
+        </div>
+        {!hasDevices && !devices.isLoading && (
+          <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            No daemons registered yet. Start the daemon on a machine and it
+            will appear here after its first poll.
+          </div>
+        )}
+        <label className="block">
+          <div className="mb-1.5 text-sm font-medium">Run on</div>
+          <select
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm disabled:opacity-50"
+            value={currentKey}
+            disabled={save.isPending}
+            onChange={(event) => {
+              const value = event.target.value;
+              save.mutate(value === "" ? null : value);
+            }}
+          >
+            <option value="">This server (local)</option>
+            {deviceList.map((device) => {
+              const supported = device.availableClis.includes(agent.adapterType);
+              return (
+                <option
+                  key={device.id}
+                  value={device.deviceKey}
+                  disabled={!supported}
+                >
+                  {device.deviceName} ({device.os})
+                  {supported ? "" : ` — no ${agent.adapterType}`}
+                </option>
+              );
+            })}
+          </select>
+        </label>
+        {currentKey && !deviceList.some((d) => d.deviceKey === currentKey) && !devices.isLoading && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              This agent is bound to a daemon that's no longer registered. Its
+              next wakeup will fail until you pick a live daemon or switch
+              back to local.
+            </span>
+          </div>
+        )}
+        {error && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+            {error}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 

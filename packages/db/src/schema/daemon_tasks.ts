@@ -1,4 +1,5 @@
 import {
+  boolean,
   pgTable,
   uuid,
   text,
@@ -40,6 +41,7 @@ export const daemonTasks = pgTable(
     adapterType: text("adapter_type").notNull(),
     prompt: text("prompt").notNull(),
     status: text("status").notNull().default("pending"),
+    cancelRequested: boolean("cancel_requested").notNull().default(false),
     exitCode: integer("exit_code"),
     output: text("output").notNull().default(""),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),

@@ -21,6 +21,8 @@ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { telegramRoutes } from "./routes/telegram.js";
+import { telegramService } from "./services/telegram.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -210,6 +212,7 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
+  api.use(telegramRoutes(db));
   api.use(costRoutes(db));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
@@ -405,6 +408,10 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  const telegram = telegramService(db);
+  void telegram.start().catch((err) => {
+    logger.error({ err }, "Failed to start telegram service");
+  });
   const feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
       void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {

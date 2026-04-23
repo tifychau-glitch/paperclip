@@ -193,13 +193,33 @@ export function daemonRoutes(db: Db) {
       companyId: (t.metadata as { companyId?: string } | null)?.companyId ?? "",
     }));
 
-    if (tasks.length > 0) {
+    // Cancellations: any in_flight task whose cancel_requested flag is
+    // set should be killed by this daemon. We surface the task IDs
+    // here so the daemon picks them up inline with its existing poll
+    // cycle — no extra endpoint, no websocket.
+    const cancelRows = await db
+      .select({ id: daemonTasks.id })
+      .from(daemonTasks)
+      .where(
+        and(
+          eq(daemonTasks.deviceKey, deviceKey),
+          eq(daemonTasks.status, "in_flight"),
+          eq(daemonTasks.cancelRequested, true),
+        ),
+      );
+    const cancellations = cancelRows.map((row) => row.id);
+
+    if (tasks.length > 0 || cancellations.length > 0) {
       logger.info(
-        { deviceKey: shortKey(deviceKey), tasks: tasks.length },
+        {
+          deviceKey: shortKey(deviceKey),
+          tasks: tasks.length,
+          cancellations: cancellations.length,
+        },
         "Daemon poll dispatched tasks",
       );
     }
-    res.json({ tasks });
+    res.json({ tasks, cancellations });
   });
 
   router.post("/run-update", async (req, res) => {
@@ -242,10 +262,16 @@ export function daemonRoutes(db: Db) {
     }
 
     const nextOutput = chunk ? (task.output ?? "") + chunk : task.output;
+    // If the heartbeat poller flipped cancel_requested before the daemon
+    // reported done, record the task as cancelled rather than failed so
+    // downstream (and the activity log) accurately reflects why it
+    // ended. Non-terminal updates don't touch status.
     const terminalStatus = done
-      ? exitCode === 0
-        ? "succeeded"
-        : "failed"
+      ? task.cancelRequested
+        ? "cancelled"
+        : exitCode === 0
+          ? "succeeded"
+          : "failed"
       : task.status;
 
     await db
@@ -345,6 +371,39 @@ export function daemonRoutes(db: Db) {
       "Daemon task enqueued by operator",
     );
     res.status(201).json({ taskId: inserted[0]?.id, status: "pending" });
+  });
+
+  // Operator-facing list of registered daemon devices. Used by the UI
+  // to populate the "Run on daemon" dropdown on AgentDetail so an
+  // operator can bind an agent to a specific machine without editing
+  // the database by hand.
+  //
+  // Output intentionally excludes `deviceKey` — only the id, friendly
+  // metadata, and a short fingerprint (first 6 chars) are returned.
+  // The key stays on the daemon's side as the shared credential; a
+  // separate admin-only endpoint handles binding the key to an agent.
+  router.get("/devices", async (req, res) => {
+    const actor = req.actor;
+    if (!actor || actor.type !== "board" || !actor.isInstanceAdmin) {
+      res.status(403).json({ error: "Instance admin required" });
+      return;
+    }
+    const rows = await db
+      .select()
+      .from(daemonDevices)
+      .orderBy(desc(daemonDevices.lastSeenAt));
+    const devices = rows.map((row) => ({
+      id: row.id,
+      deviceName: row.deviceName,
+      os: row.os,
+      availableClis: row.availableClis,
+      version: row.version,
+      lastSeenAt: row.lastSeenAt,
+      registeredAt: row.registeredAt,
+      deviceKey: row.deviceKey,
+      deviceKeyFingerprint: shortKey(row.deviceKey),
+    }));
+    res.json({ devices });
   });
 
   // Operator introspection — list recent tasks so you can watch what a

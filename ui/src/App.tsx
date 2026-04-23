@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   Network,
+  Settings,
   Zap,
 } from "lucide-react";
 import { DashboardPage } from "./pages/Dashboard";
@@ -19,6 +20,7 @@ import { TasksPage } from "./pages/Tasks";
 import { OrgChartPage } from "./pages/OrgChart";
 import { LoginPage } from "./pages/Login";
 import { ResetPasswordPage } from "./pages/ResetPassword";
+import { SettingsPage } from "./pages/Settings";
 import { CompanySwitcher } from "./components/CompanySwitcher";
 import { useSession, useSignOut } from "./lib/auth";
 
@@ -30,6 +32,7 @@ const TABS = [
   { to: "/skills", label: "Skills", icon: BookOpen },
   { to: "/activity", label: "Activity", icon: Activity },
   { to: "/spending", label: "Spending", icon: Banknote },
+  { to: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function App() {
@@ -132,6 +135,7 @@ function AuthenticatedApp({
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/activity" element={<ActivityPage />} />
           <Route path="/spending" element={<SpendingPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route
             path="*"
             element={

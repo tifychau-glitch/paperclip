@@ -20,6 +20,8 @@ import {
   agentWakeupRequests,
   activityLog,
   companySkills as companySkillsTable,
+  daemonDevices,
+  daemonTasks,
   documentRevisions,
   issueDocuments,
   heartbeatRunEvents,
@@ -106,8 +108,12 @@ import {
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
+  renderTemplate,
+  joinPromptSections,
+  renderPaperclipWakePrompt,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds } from "@paperclipai/shared";
+import { dispatchTelegramReply } from "./telegram.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -1730,6 +1736,315 @@ function triggerMemoryWriter(params: {
 function isMemoryEnabled(agent: { metadata?: unknown }): boolean {
   const md = (agent.metadata ?? {}) as Record<string, unknown>;
   return md.memory_enabled === true;
+}
+
+// ---- Clipboard daemon routing (additive) ----
+// When an agent has `daemonDeviceKey` set, heartbeat.ts enqueues work into
+// daemon_tasks instead of spawning locally via adapter.execute. The daemon
+// owns the actual CLI invocation on its own machine and streams output
+// back via POST /api/daemon/run-update (see server/src/routes/daemon.ts).
+//
+// Design choice: **poll-wait** (not fire-and-forget).
+//   - The heartbeat worker already blocks for the full duration of a
+//     local adapter.execute call, so polling here does not regress
+//     concurrency — we're just awaiting a different completion signal.
+//   - Poll-wait preserves the existing post-run pipeline unchanged:
+//     session state, usage ledger, memory-writer hook, issue comments,
+//     and agent status transitions all run from the same call site as
+//     local runs. A fire-and-forget design would require replaying all
+//     of that logic from the daemon run-update handler, cross-cutting
+//     a lot of code and risking divergence.
+//   - Output visibility in AgentDetail "Recent Tasks" works for free:
+//     the poller pushes daemon stdout chunks through the existing
+//     `onLog` callback, which persists them via runLogStore on the
+//     heartbeat_runs row — identical to local execution.
+
+const DAEMON_POLL_INTERVAL_MS = 2_000;
+const DAEMON_TASK_TIMEOUT_MS = 30 * 60 * 1000;
+
+// Compose the prompt string the daemon feeds into its local CLI.
+//
+// Strategy, in order:
+//   1. If the agent's adapterConfig has a `promptTemplate` (the normal
+//      Clipboard-created agent case), render it with the same
+//      `{{agent.foo}}` / `{{context.bar}}` substitution the local
+//      adapters use. Prepend a bootstrap prompt when present, and the
+//      paperclipWake prompt if this run was triggered by issue-driven
+//      wake context. This gives daemon-bound agents close-to-parity
+//      prompts with their locally-running equivalents for the common
+//      case (no resumed session, fresh invocation).
+//   2. Otherwise fall back to a hand-composed prompt built from
+//      agent.capabilities, persona, and context.wakeReason. This is
+//      good enough for ad-hoc agents without a configured template.
+//
+// What we deliberately skip vs. the local adapter's prompt path:
+//   - Session-resumption delta prompts (the daemon starts fresh every
+//     task — session continuity is a future enhancement).
+//   - Prompt-bundle skill injection (handled on the daemon side by
+//     the local CLI's own skill discovery).
+//   - `context.paperclipSessionHandoffMarkdown` (only populated on
+//     session handoffs, not applicable to fresh daemon runs).
+export function composeDaemonPrompt(
+  agent: typeof agents.$inferSelect,
+  runtimeConfig: Record<string, unknown>,
+  context: Record<string, unknown>,
+  runId: string,
+): string {
+  const adapterConfig = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+  const promptTemplate =
+    typeof runtimeConfig.promptTemplate === "string" && runtimeConfig.promptTemplate.trim().length > 0
+      ? runtimeConfig.promptTemplate
+      : typeof adapterConfig.promptTemplate === "string" && adapterConfig.promptTemplate.trim().length > 0
+        ? (adapterConfig.promptTemplate as string)
+        : null;
+
+  if (promptTemplate) {
+    const bootstrapTemplate =
+      typeof runtimeConfig.bootstrapPromptTemplate === "string"
+        ? runtimeConfig.bootstrapPromptTemplate
+        : typeof adapterConfig.bootstrapPromptTemplate === "string"
+          ? (adapterConfig.bootstrapPromptTemplate as string)
+          : "";
+    const templateData = {
+      agentId: agent.id,
+      companyId: agent.companyId,
+      runId,
+      company: { id: agent.companyId },
+      agent,
+      run: { id: runId, source: "on_demand" },
+      context,
+    };
+    const renderedBootstrap = bootstrapTemplate.trim().length > 0
+      ? renderTemplate(bootstrapTemplate, templateData).trim()
+      : "";
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: false });
+    const renderedMain = renderTemplate(promptTemplate, templateData);
+    return joinPromptSections([renderedBootstrap, wakePrompt, renderedMain]);
+  }
+
+  // Fallback — agents without a configured promptTemplate.
+  const parts: string[] = [];
+  const name = agent.name ? String(agent.name) : "";
+  const title = agent.title ? String(agent.title) : "";
+  if (name) parts.push(`You are ${name}${title ? `, ${title}` : ""}.`);
+  if (agent.capabilities) parts.push(`Role: ${String(agent.capabilities)}`);
+  const persona = (agent.metadata as Record<string, unknown> | null)?.persona;
+  if (typeof persona === "string" && persona.trim()) {
+    parts.push(`How you behave: ${persona.trim()}`);
+  }
+  const wakeReason = typeof context.wakeReason === "string" ? context.wakeReason.trim() : "";
+  if (wakeReason) parts.push(`Task: ${wakeReason}`);
+  const payload = context.payload;
+  if (payload && typeof payload === "object") {
+    try {
+      const payloadStr = JSON.stringify(payload);
+      if (payloadStr && payloadStr !== "{}") parts.push(`Details: ${payloadStr}`);
+    } catch {
+      /* ignore non-serializable payload */
+    }
+  }
+  const userMessage = typeof context.userMessage === "string" ? context.userMessage.trim() : "";
+  if (userMessage) parts.push(userMessage);
+  return parts.join("\n\n");
+}
+
+export async function executeViaDaemon(args: {
+  db: Db;
+  deviceKey: string;
+  runId: string;
+  agent: typeof agents.$inferSelect;
+  adapterType: string;
+  runtimeConfig: Record<string, unknown>;
+  context: Record<string, unknown>;
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+}): Promise<AdapterExecutionResult> {
+  const { db, deviceKey, runId, agent, adapterType, runtimeConfig, context, onLog, onMeta } = args;
+
+  const device = await db
+    .select({
+      id: daemonDevices.id,
+      availableClis: daemonDevices.availableClis,
+      deviceName: daemonDevices.deviceName,
+    })
+    .from(daemonDevices)
+    .where(eq(daemonDevices.deviceKey, deviceKey))
+    .then((rows) => rows[0] ?? null);
+
+  if (!device) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: `Daemon device ${deviceKey.slice(0, 6)}… is not registered`,
+      errorCode: "daemon_unregistered",
+    };
+  }
+  if (!device.availableClis.includes(adapterType)) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: `Daemon does not advertise support for ${adapterType}`,
+      errorCode: "daemon_adapter_unsupported",
+    };
+  }
+
+  const prompt = composeDaemonPrompt(agent, runtimeConfig, context, runId);
+
+  const inserted = await db
+    .insert(daemonTasks)
+    .values({
+      deviceKey,
+      adapterType,
+      prompt,
+      agentId: agent.id,
+      runId,
+      metadata: { companyId: agent.companyId, source: "heartbeat" },
+      createdBy: "heartbeat",
+      status: "pending",
+    })
+    .returning({ id: daemonTasks.id });
+  const taskId = inserted[0]?.id;
+  if (!taskId) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Failed to enqueue daemon_tasks row",
+      errorCode: "daemon_enqueue_failed",
+    };
+  }
+
+  if (onMeta) {
+    await onMeta({
+      adapterType,
+      command: `daemon:${device.deviceName}`,
+      commandNotes: [
+        `Routed to daemon device ${device.deviceName} (${deviceKey.slice(0, 6)}…)`,
+        `daemon_tasks.id=${taskId}`,
+      ],
+      prompt,
+    });
+  }
+
+  logger.info(
+    {
+      runId,
+      agentId: agent.id,
+      taskId,
+      deviceKey: `${deviceKey.slice(0, 6)}…`,
+      adapterType,
+    },
+    "heartbeat enqueued run to daemon",
+  );
+
+  const startedAt = Date.now();
+  let streamedBytes = 0;
+  let cancelFlagged = false;
+
+  while (true) {
+    if (Date.now() - startedAt > DAEMON_TASK_TIMEOUT_MS) {
+      await db
+        .update(daemonTasks)
+        .set({ status: "failed", completedAt: new Date() })
+        .where(eq(daemonTasks.id, taskId))
+        .catch((err: unknown) => {
+          logger.warn({ err, taskId }, "Failed to mark daemon_tasks timed out");
+        });
+      return {
+        exitCode: null,
+        signal: null,
+        timedOut: true,
+        errorMessage: "Daemon task timed out waiting for completion",
+        errorCode: "timeout",
+      };
+    }
+
+    const row = await db
+      .select()
+      .from(daemonTasks)
+      .where(eq(daemonTasks.id, taskId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!row) {
+      return {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Daemon task row vanished",
+        errorCode: "daemon_task_missing",
+      };
+    }
+
+    const currentOutput = row.output ?? "";
+    if (currentOutput.length > streamedBytes) {
+      const delta = currentOutput.slice(streamedBytes);
+      streamedBytes = currentOutput.length;
+      try {
+        await onLog("stdout", delta);
+      } catch (err) {
+        logger.warn({ err, runId, taskId }, "onLog failed for daemon output chunk");
+      }
+    }
+
+    // Cancellation: if something flipped heartbeat_runs.status to
+    // "cancelled" (typically cancelRunInternal, triggered by a user
+    // cancel or a budget pause), propagate the signal to the daemon
+    // via daemon_tasks.cancel_requested — the next daemon poll
+    // surfaces it, the daemon SIGTERMs the child, and run-update
+    // flips the task to "cancelled". The outer heartbeat flow will
+    // re-read heartbeat_runs.status post-return and reconcile
+    // outcome=cancelled exactly as it does for local execution.
+    if (!cancelFlagged) {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      if (currentRun?.status === "cancelled") {
+        cancelFlagged = true;
+        await db
+          .update(daemonTasks)
+          .set({ cancelRequested: true })
+          .where(eq(daemonTasks.id, taskId))
+          .catch((err: unknown) => {
+            logger.warn({ err, taskId }, "Failed to flag daemon task cancel_requested");
+          });
+      }
+    }
+
+    if (row.status === "succeeded" || row.status === "failed" || row.status === "cancelled") {
+      const exitCode = row.exitCode ?? (row.status === "succeeded" ? 0 : 1);
+      if (row.status === "succeeded") {
+        return {
+          exitCode,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          errorCode: null,
+        };
+      }
+      if (row.status === "cancelled") {
+        return {
+          exitCode,
+          signal: null,
+          timedOut: false,
+          errorMessage: "Cancelled by control plane",
+          errorCode: "cancelled",
+        };
+      }
+      return {
+        exitCode,
+        signal: null,
+        timedOut: false,
+        errorMessage: `Daemon task failed (exit ${exitCode})`,
+        errorCode: "daemon_failed",
+      };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, DAEMON_POLL_INTERVAL_MS));
+  }
 }
 
 export function heartbeatService(db: Db) {
@@ -4614,26 +4929,48 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runtimeConfig,
-        context,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, {
-            pid: meta.pid,
-            processGroupId:
-              "processGroupId" in meta && typeof meta.processGroupId === "number"
-                ? meta.processGroupId
-                : null,
-            startedAt: meta.startedAt,
+      // Clipboard daemon routing: if the agent is bound to a registered
+      // daemon device, enqueue into daemon_tasks and poll-wait instead of
+      // spawning locally. Agents with a null daemon_device_key continue to
+      // run through the local adapter exactly as before. See the
+      // executeViaDaemon helper above for the trade-off rationale.
+      const daemonDeviceKey =
+        typeof agent.daemonDeviceKey === "string" && agent.daemonDeviceKey.trim().length > 0
+          ? agent.daemonDeviceKey.trim()
+          : null;
+
+      const adapterResult = daemonDeviceKey
+        ? await executeViaDaemon({
+            db,
+            deviceKey: daemonDeviceKey,
+            runId: run.id,
+            agent,
+            adapterType: agent.adapterType,
+            runtimeConfig,
+            context,
+            onLog,
+            onMeta: onAdapterMeta,
+          })
+        : await adapter.execute({
+            runId: run.id,
+            agent,
+            runtime: runtimeForAdapter,
+            config: runtimeConfig,
+            context,
+            onLog,
+            onMeta: onAdapterMeta,
+            onSpawn: async (meta) => {
+              await persistRunProcessMetadata(run.id, {
+                pid: meta.pid,
+                processGroupId:
+                  "processGroupId" in meta && typeof meta.processGroupId === "number"
+                    ? meta.processGroupId
+                    : null,
+                startedAt: meta.startedAt,
+              });
+            },
+            authToken: authToken ?? undefined,
           });
-        },
-        authToken: authToken ?? undefined,
-      });
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -4861,6 +5198,12 @@ export function heartbeatService(db: Db) {
       }
       await finalizeAgentStatus(agent.id, outcome);
 
+      // Telegram reply (additive, fire-and-forget): if this run was triggered
+      // by a Telegram message, send the agent's final answer back to the
+      // chat. dispatchTelegramReply no-ops for non-Telegram runs and never
+      // throws — safe to call unconditionally.
+      void dispatchTelegramReply(db, run.id);
+
       // Clipboard session memory: fire-and-forget post-run summarizer.
       // Only runs for successful runs on agents that opted in and have a cwd.
       if (outcome === "succeeded" && isMemoryEnabled(agent)) {
@@ -4946,6 +5289,10 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
+
+      // Telegram reply for adapter failures — same helper, no-ops if the
+      // run wasn't triggered from Telegram.
+      void dispatchTelegramReply(db, run.id);
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -4989,6 +5336,8 @@ export function heartbeatService(db: Db) {
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          // Telegram reply for setup failures.
+          void dispatchTelegramReply(db, run.id);
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);

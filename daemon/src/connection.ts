@@ -37,6 +37,12 @@ interface RegisterResponse {
 
 interface PollResponse {
   tasks?: TaskDescriptor[];
+  /**
+   * IDs of in-flight tasks the server has requested we cancel.
+   * Each entry corresponds to a task previously returned by /poll
+   * that the operator (or control plane) has since decided to stop.
+   */
+  cancellations?: string[];
 }
 
 function joinUrl(base: string, path: string): string {
@@ -182,6 +188,24 @@ export class CloudConnection {
       const tasks = body.tasks ?? [];
       for (const task of tasks) {
         this.dispatch(task);
+      }
+
+      // Honor server-requested cancellations. Because we key kills by
+      // taskId and send SIGTERM (see executeTask's kill closure), this
+      // lets the child CLI flush and exit gracefully; the surrounding
+      // onDone callback then posts a terminal run-update so the server
+      // can finalize the task row.
+      const cancellations = body.cancellations ?? [];
+      for (const taskId of cancellations) {
+        const kill = this.activeKills.get(taskId);
+        if (!kill) continue;
+        log.info(`[task ${taskId}] cancel requested by server — killing`);
+        try {
+          kill();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn(`[task ${taskId}] kill failed: ${msg}`);
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

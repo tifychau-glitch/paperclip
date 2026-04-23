@@ -8,12 +8,17 @@ import type {
   AdapterSkillSnapshot,
   Agent,
   Company,
+  CompanySecret,
   CompanySkillDetail,
   CompanySkillFileDetail,
   CompanySkillListItem,
   CostsByAgentRow,
   CostsSummary,
   HeartbeatRun,
+  SecretProvider,
+  SecretProviderDescriptor,
+  TelegramConfig,
+  TelegramTestResult,
 } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -205,6 +210,32 @@ export const api = {
       body: JSON.stringify({ desiredSkills }),
     }),
 
+  // Daemon (Clipboard daemon devices — admin-only list)
+  listDaemonDevices: () =>
+    request<{
+      devices: Array<{
+        id: string;
+        deviceName: string;
+        os: string;
+        availableClis: string[];
+        version: string | null;
+        lastSeenAt: string;
+        registeredAt: string;
+        deviceKey: string;
+        deviceKeyFingerprint: string;
+      }>;
+    }>("/daemon/devices").catch(() => ({ devices: [] as Array<{
+      id: string;
+      deviceName: string;
+      os: string;
+      availableClis: string[];
+      version: string | null;
+      lastSeenAt: string;
+      registeredAt: string;
+      deviceKey: string;
+      deviceKeyFingerprint: string;
+    }> })),
+
   // Memory (Clipboard session memory stored at {cwd}/memory.md)
   getAgentMemory: (agentId: string) =>
     request<{
@@ -216,5 +247,68 @@ export const api = {
   clearAgentMemory: (agentId: string) =>
     request<{ ok: boolean; path: string }>(`/agents/${agentId}/memory`, {
       method: "DELETE",
+    }),
+
+  // Secrets (per-company API keys / credentials)
+  listSecretProviders: (companyId: string) =>
+    request<SecretProviderDescriptor[]>(
+      `/companies/${companyId}/secret-providers`,
+    ),
+  listSecrets: (companyId: string) =>
+    request<CompanySecret[]>(`/companies/${companyId}/secrets`),
+  createSecret: (
+    companyId: string,
+    body: {
+      name: string;
+      value: string;
+      provider?: SecretProvider;
+      description?: string;
+      externalRef?: string;
+    },
+  ) =>
+    request<CompanySecret>(`/companies/${companyId}/secrets`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  rotateSecret: (id: string, body: { value: string; externalRef?: string }) =>
+    request<CompanySecret>(`/secrets/${id}/rotate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateSecret: (
+    id: string,
+    body: { name?: string; description?: string; externalRef?: string },
+  ) =>
+    request<CompanySecret>(`/secrets/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteSecret: (id: string) =>
+    request<{ ok: boolean }>(`/secrets/${id}`, { method: "DELETE" }),
+
+  // Telegram integration (per-company)
+  getTelegramConfig: (companyId: string) =>
+    request<TelegramConfig>(`/companies/${companyId}/telegram`),
+  updateTelegramConfig: (
+    companyId: string,
+    body: {
+      enabled?: boolean;
+      botToken?: string | null;
+      defaultAgentId?: string | null;
+      allowedUserIds?: string[];
+    },
+  ) =>
+    request<TelegramConfig>(`/companies/${companyId}/telegram`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteTelegramConfig: (companyId: string) =>
+    request<{ ok: boolean }>(`/companies/${companyId}/telegram`, {
+      method: "DELETE",
+    }),
+  testTelegramBot: (companyId: string, body: { botToken?: string }) =>
+    request<TelegramTestResult>(`/companies/${companyId}/telegram/test`, {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
 };
