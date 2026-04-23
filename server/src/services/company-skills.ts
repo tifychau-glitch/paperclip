@@ -1407,8 +1407,10 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
   if (metadata.sourceKind === "paperclip_bundled") {
     return {
       editable: false,
-      editableReason: "Bundled Paperclip skills are read-only.",
-      sourceLabel: "Paperclip bundled",
+      editableReason: "Built-in skills are read-only.",
+      sourceLabel: "Built-in",
+      // `sourceBadge: "paperclip"` is an internal enum for color routing,
+      // never rendered to the user (SourceBadge prefers the label).
       sourceBadge: "paperclip",
       sourcePath: null,
     };

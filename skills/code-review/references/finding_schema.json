@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReviewFinding",
+  "type": "object",
+  "required": ["id", "severity", "category", "file", "title", "evidence", "status", "scan_id"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^F-[0-9]{8}-[0-9]{4}$",
+      "description": "R-YYYYMMDD-NNNN"
+    },
+    "severity": {
+      "enum": ["critical", "high", "medium", "low"]
+    },
+    "category": {
+      "enum": [
+        "correctness",
+        "error-handling",
+        "security",
+        "concurrency",
+        "resource",
+        "type",
+        "test-gap",
+        "regression",
+        "dead-code"
+      ]
+    },
+    "file": {
+      "type": "string",
+      "description": "Path relative to project root."
+    },
+    "line": {
+      "type": ["integer", "null"],
+      "description": "1-indexed line number. Null if not applicable (e.g. missing file)."
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "One-line summary."
+    },
+    "evidence": {
+      "type": "string",
+      "description": "Why this is a problem. Concrete, not speculative."
+    },
+    "reproduction": {
+      "type": ["string", "null"],
+      "description": "Path to repro test, or manual repro steps."
+    },
+    "suggested_fix": {
+      "type": ["string", "null"],
+      "description": "Minimal change to address the finding."
+    },
+    "status": {
+      "enum": ["open", "confirmed", "fixed", "wontfix", "false-positive"]
+    },
+    "introduced_commit": {
+      "type": ["string", "null"],
+      "description": "Optional git SHA from blame."
+    },
+    "scan_id": {
+      "type": "string",
+      "pattern": "^S-[0-9]{8}-[0-9]{2}$"
+    }
+  }
+}

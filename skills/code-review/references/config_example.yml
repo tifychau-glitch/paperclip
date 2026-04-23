@@ -1,0 +1,53 @@
+# Code Review config template. Copy to .code-review/config.yml and customize per project.
+
+# Commands Code Review runs during baseline step. Any that exit non-zero counts as failure.
+# Leave a value as null or omit it to skip that step.
+verify:
+  test: null          # e.g. "pytest -x" or "npm test -- --run"
+  lint: null          # e.g. "ruff check ." or "eslint ."
+  typecheck: null     # e.g. "mypy src/" or "tsc --noEmit"
+  custom: []          # list of extra shell commands to run
+
+# Where Code Review looks when scope is "the whole project".
+scope:
+  include:
+    - "src/**"
+  exclude:
+    - "**/node_modules/**"
+    - "**/.venv/**"
+    - "**/__pycache__/**"
+    - "**/dist/**"
+    - "**/build/**"
+
+# Output destinations. Local filesystem is always on.
+outputs:
+  local: true
+
+  dashboard:
+    enabled: false
+    project_id: null       # set to the dashboard project_id once decided
+
+  mission_control:
+    enabled: false
+    channel: code-review
+
+  telegram:
+    enabled: true
+    min_severity: critical  # one of: critical, high, medium, low
+    chat_id: null           # set to your Telegram chat ID, or reuse TELEGRAM_CHAT_ID from .env
+
+  github_pr:
+    enabled: false
+    post_as_review: true
+    per_run_approval_required: true
+
+  email:
+    enabled: false
+    to: null
+    min_severity: high
+
+# Fix mode safety rails.
+fix_mode:
+  max_retries_per_finding: 2
+  auto_commit: true
+  commit_prefix: "fix(code-review):"

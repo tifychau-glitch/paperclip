@@ -1,0 +1,12 @@
+{
+  "severity": "medium",
+  "category": "correctness",
+  "file": "",
+  "line": null,
+  "title": "",
+  "evidence": "",
+  "reproduction": null,
+  "suggested_fix": null,
+  "status": "open",
+  "introduced_commit": null
+}
